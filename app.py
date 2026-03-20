@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, url_for
+from flask import Flask, request, redirect, url_for, jsonify
 import requests
 import json
 import html
@@ -7,7 +7,6 @@ app = Flask(__name__)
 
 RYU = "http://127.0.0.1:8080"
 REFRESH_SECONDS = 10
-
 
 BASE = f"""
 <html>
@@ -114,11 +113,7 @@ button.delete-btn {{
 button.quarantine-btn {{
     background: #7a3eb1;
 }}
-button.refresh-btn {{
-    background: white;
-    color: #2f6f73;
-}}
-input, textarea, select {{
+input, textarea {{
     width: 100%;
     box-sizing: border-box;
     margin-bottom: 10px;
@@ -165,6 +160,37 @@ pre {{
     font-size: 12px;
     color: #555;
 }}
+.topology-wrap {{
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}}
+.topology-box {{
+    min-width: 260px;
+    flex: 1;
+    background: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
+}}
+.node {{
+    padding: 10px 12px;
+    margin: 8px 0;
+    border-radius: 6px;
+    font-weight: bold;
+}}
+.node-switch {{
+    background: #d8eced;
+    border: 1px solid #7eb0b4;
+}}
+.node-host {{
+    background: #f6e4cf;
+    border: 1px solid #d2a56b;
+}}
+.link-row {{
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}}
 </style>
 </head>
 <body>
@@ -177,6 +203,7 @@ pre {{
 <div class="container">
     <div class="sidebar">
         <a href="/">Home</a>
+        <a href="/topology">Topology</a>
         <a href="/flows">Flows</a>
         <a href="/ports">Ports</a>
         <a href="/flowcontrol">Flow Control</a>
@@ -191,14 +218,11 @@ pre {{
 </html>
 """
 
-
 def page(html_content: str) -> str:
     return BASE.replace("__CONTENT__", html_content)
 
-
 def safe_json_dumps(obj) -> str:
     return html.escape(json.dumps(obj))
-
 
 def get_json(path: str, default):
     try:
@@ -208,16 +232,25 @@ def get_json(path: str, default):
     except Exception:
         return default
 
-
 def post_json(path: str, payload: dict):
     r = requests.post(RYU + path, json=payload, timeout=3)
     return r.text
-
 
 def get_switches():
     data = get_json("/stats/switches", [])
     return data if isinstance(data, list) else []
 
+def get_topology_switches():
+    data = get_json("/v1.0/topology/switches", [])
+    return data if isinstance(data, list) else []
+
+def get_topology_links():
+    data = get_json("/v1.0/topology/links", [])
+    return data if isinstance(data, list) else []
+
+def get_topology_hosts():
+    data = get_json("/v1.0/topology/hosts", [])
+    return data if isinstance(data, list) else []
 
 def render_switch_tabs(active=None, target="flows"):
     sws = get_switches()
@@ -231,16 +264,121 @@ def render_switch_tabs(active=None, target="flows"):
         html_parts.append(f'<a class="{cls}" href="/{target}?dpid={s}">{label}</a>')
     return "".join(html_parts)
 
+@app.route("/api/topology")
+def api_topology():
+    stats_switches = get_switches()
+    topo_switches = get_topology_switches()
+    topo_links = get_topology_links()
+    topo_hosts = get_topology_hosts()
+
+    result = {
+        "stats_switches": stats_switches,
+        "topology_switches": topo_switches,
+        "topology_links": topo_links,
+        "topology_hosts": topo_hosts
+    }
+    return jsonify(result)
 
 @app.route("/")
 def home():
     sws = get_switches()
     html_content = "<div class='card'><h2>Controller Overview</h2>"
     html_content += f"<p><b>Detected Switches:</b> {len(sws)}</p>"
-    html_content += "<p>Use the menu to inspect flow tables, port stats, add/remove rules, or quarantine traffic.</p></div>"
+    html_content += "<p>Use the menu to inspect topology, flow tables, port stats, add/remove rules, or quarantine traffic.</p></div>"
     html_content += render_switch_tabs()
     return page(html_content)
 
+@app.route("/topology")
+def topology():
+    html_content = """
+    <h2>Live Topology</h2>
+    <div class="note">
+        This page polls the controller for topology data in real time.
+        If Ryu exposes /v1.0/topology/*, you will see switches, links, and hosts.
+        Otherwise, it will fall back to live switch detection from /stats/switches.
+    </div>
+
+    <div class="topology-wrap">
+        <div class="topology-box">
+            <h3>Switches</h3>
+            <div id="switches_box">Loading...</div>
+        </div>
+
+        <div class="topology-box">
+            <h3>Links</h3>
+            <div id="links_box">Loading...</div>
+        </div>
+
+        <div class="topology-box">
+            <h3>Hosts</h3>
+            <div id="hosts_box">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+    async function loadTopology() {
+        try {
+            const res = await fetch('/api/topology');
+            const data = await res.json();
+
+            const switchesBox = document.getElementById('switches_box');
+            const linksBox = document.getElementById('links_box');
+            const hostsBox = document.getElementById('hosts_box');
+
+            let switchHtml = "";
+            let linkHtml = "";
+            let hostHtml = "";
+
+            if (data.topology_switches && data.topology_switches.length > 0) {
+                data.topology_switches.forEach(sw => {
+                    const dpid = sw.dp.id || sw.dpid || JSON.stringify(sw);
+                    switchHtml += `<div class="node node-switch">${dpid}</div>`;
+                });
+            } else if (data.stats_switches && data.stats_switches.length > 0) {
+                data.stats_switches.forEach(sw => {
+                    switchHtml += `<div class="node node-switch">DPID ${sw}</div>`;
+                });
+                switchHtml += `<div class="small">Using switch-only fallback from /stats/switches</div>`;
+            } else {
+                switchHtml = "No switches detected.";
+            }
+
+            if (data.topology_links && data.topology_links.length > 0) {
+                data.topology_links.forEach(link => {
+                    const src = link.src ? `${link.src.dpid}:${link.src.port_no}` : "unknown";
+                    const dst = link.dst ? `${link.dst.dpid}:${link.dst.port_no}` : "unknown";
+                    linkHtml += `<div class="link-row">${src} → ${dst}</div>`;
+                });
+            } else {
+                linkHtml = "No live links detected.";
+            }
+
+            if (data.topology_hosts && data.topology_hosts.length > 0) {
+                data.topology_hosts.forEach(host => {
+                    const mac = host.mac || "unknown-mac";
+                    const attach = host.port ? `${host.port.dpid}:${host.port.port_no}` : "unknown-port";
+                    hostHtml += `<div class="node node-host">${mac}<br><span class="small">${attach}</span></div>`;
+                });
+            } else {
+                hostHtml = "No hosts detected.";
+            }
+
+            switchesBox.innerHTML = switchHtml;
+            linksBox.innerHTML = linkHtml;
+            hostsBox.innerHTML = hostHtml;
+
+        } catch (e) {
+            document.getElementById('switches_box').innerHTML = "Topology query failed.";
+            document.getElementById('links_box').innerHTML = "Topology query failed.";
+            document.getElementById('hosts_box').innerHTML = "Topology query failed.";
+        }
+    }
+
+    loadTopology();
+    setInterval(loadTopology, 3000);
+    </script>
+    """
+    return page(html_content)
 
 @app.route("/switches")
 def switches_page():
@@ -255,7 +393,6 @@ def switches_page():
     html_content += "</table>"
     return page(html_content)
 
-
 @app.route("/flows")
 def flows():
     sws = get_switches()
@@ -265,6 +402,8 @@ def flows():
     dpid = request.args.get("dpid", str(sws[0]))
     data = get_json(f"/stats/flow/{dpid}", {})
     flow_entries = data.get(str(dpid), []) if isinstance(data, dict) else []
+
+    msg = request.args.get("msg", "")
 
     rows = ""
     for f in flow_entries:
@@ -295,7 +434,6 @@ def flows():
                     <input type="hidden" name="dpid" value="{dpid}">
                     <input type="hidden" name="priority" value="{priority}">
                     <input type="hidden" name="match" value="{match_json}">
-                    <input type="hidden" name="source" value="row">
                     <button type="submit" class="quarantine-btn">Quarantine</button>
                 </form>
             </td>
@@ -303,6 +441,11 @@ def flows():
         """
 
     html_content = "<h2>Flow Table</h2>"
+    if msg == "deleted":
+        html_content += "<div class='msg'>Flow deleted.</div>"
+    elif msg == "quarantined":
+        html_content += "<div class='msg'>Quarantine rule installed.</div>"
+
     html_content += render_switch_tabs(active=dpid, target="flows")
     html_content += """
     <table>
@@ -317,9 +460,8 @@ def flows():
     """
     html_content += rows if rows else "<tr><td colspan='6'>No flows found.</td></tr>"
     html_content += "</table>"
-    html_content += "<p class='small'>Delete removes the selected flow by DPID + priority + match. Quarantine installs a higher-priority redirect rule for the same match.</p>"
+    html_content += "<p class='small'>Delete removes the selected flow. Quarantine installs a higher-priority redirect rule for the same match.</p>"
     return page(html_content)
-
 
 @app.route("/ports")
 def ports():
@@ -358,7 +500,6 @@ def ports():
     html_content += rows if rows else "<tr><td colspan='5'>No port stats found.</td></tr>"
     html_content += "</table>"
     return page(html_content)
-
 
 @app.route("/flowcontrol", methods=["GET", "POST"])
 def flowcontrol():
@@ -404,7 +545,6 @@ def flowcontrol():
     """
     return page(html_content)
 
-
 @app.route("/quarantine", methods=["GET", "POST"])
 def quarantine():
     msg = ""
@@ -434,7 +574,7 @@ def quarantine():
     html_content += """
     <div class='note'>
         Quarantine installs a higher-priority rule that redirects matching traffic to the quarantine port.
-        Use the switch and port values that match your quarantine environment.
+        Set the port to the interface connected to your quarantine environment.
     </div>
     """
     if msg:
@@ -461,7 +601,6 @@ def quarantine():
     """
     return page(html_content)
 
-
 @app.route("/deleteflow", methods=["POST"])
 def deleteflow():
     try:
@@ -475,23 +614,19 @@ def deleteflow():
             "match": match
         }
 
-        response_text = post_json("/stats/flowentry/delete", payload)
+        post_json("/stats/flowentry/delete", payload)
         return redirect(url_for("flows", dpid=dpid, msg="deleted"))
     except Exception as e:
         return page(f"<div class='err'>Delete failed: {html.escape(str(e))}</div>")
-
 
 @app.route("/quarantineflow", methods=["POST"])
 def quarantineflow():
     try:
         dpid = int(request.form["dpid"])
         match = json.loads(request.form["match"])
-
-        # Use a higher priority than the original flow so the quarantine rule wins.
         original_priority = int(request.form.get("priority", "100"))
         quarantine_priority = max(original_priority + 100, 500)
 
-        # Default quarantine port. Change here if your environment uses a different port.
         quarantine_port = 2
 
         payload = {
@@ -506,11 +641,10 @@ def quarantineflow():
             ]
         }
 
-        response_text = post_json("/stats/flowentry/add", payload)
+        post_json("/stats/flowentry/add", payload)
         return redirect(url_for("flows", dpid=dpid, msg="quarantined"))
     except Exception as e:
         return page(f"<div class='err'>Quarantine failed: {html.escape(str(e))}</div>")
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

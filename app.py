@@ -3,6 +3,7 @@ import requests
 import json
 import html
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -13,26 +14,25 @@ DEVICE_REGISTRY_FILE = "device_registry.json"
 QUARANTINE_STATE_FILE = "quarantine_state.json"
 
 # -------------------------------------------------------------------
-# Switch names
-# Replace these with your exact DPIDs if needed
+# Friendly switch names
+# IMPORTANT: use your real DPIDs here
 # -------------------------------------------------------------------
 SWITCH_LABELS = {
-    "0000000000000111": "Main Switch",
-    "0000000000000222": "Quarantine Switch"
+    "00000000bada111": "Main Switch",
+    "00000000bada222": "Quarantine Switch"
 }
 
 # -------------------------------------------------------------------
-# Default quarantine destination port by switch DPID
-# Change these to match your actual environment
+# Quarantine output port per switch
+# Change ports if needed for your environment
 # -------------------------------------------------------------------
 QUARANTINE_PORTS = {
-    "0000000000000111": 2,
-    "0000000000000222": 2
+    "00000000bada111": 2,
+    "00000000bada222": 2
 }
 
 # -------------------------------------------------------------------
-# Optional known devices
-# Any MAC not here will still get a friendly generated name
+# Known devices
 # -------------------------------------------------------------------
 MAC_WHITELIST = {
     "00:00:00:00:00:01": {
@@ -51,7 +51,7 @@ MAC_WHITELIST = {
         "owner": "Lab"
     },
     "00:0c:29:16:37:b5": {
-        "label": "IoT Test Device",
+        "label": "Test_IoT_Device",
         "role": "Approved IoT",
         "owner": "Lab"
     }
@@ -76,11 +76,6 @@ body {{
     font-weight: bold;
     display: flex;
     justify-content: space-between;
-    align-items: center;
-}}
-.header-right {{
-    display: flex;
-    gap: 10px;
     align-items: center;
 }}
 .header-btn {{
@@ -290,7 +285,7 @@ svg {{
 <body>
 <div class="header">
     <div>Flow Tables</div>
-    <div class="header-right">
+    <div>
         <a class="header-btn" href="javascript:window.location.reload()">⟳ Refresh</a>
     </div>
 </div>
@@ -315,7 +310,7 @@ svg {{
 
 
 # -------------------------------------------------------------------
-# Persistence helpers
+# File helpers
 # -------------------------------------------------------------------
 def load_json_file(path, default):
     try:
@@ -355,10 +350,6 @@ def page(html_content: str) -> str:
     return BASE.replace("__CONTENT__", html_content)
 
 
-def safe_json_dumps(obj) -> str:
-    return html.escape(json.dumps(obj))
-
-
 def normalize_mac(mac: str) -> str:
     return (mac or "").strip().lower()
 
@@ -366,6 +357,18 @@ def normalize_mac(mac: str) -> str:
 def friendly_switch_name(dpid: str) -> str:
     dpid = str(dpid)
     return SWITCH_LABELS.get(dpid, f"SW_{dpid[-3:]}")
+
+
+def dpid_to_int(dpid_value) -> int:
+    """
+    Supports both decimal DPIDs and hex-style DPIDs like 00000000bada111
+    """
+    s = str(dpid_value).strip().lower()
+    if s.startswith("0x"):
+        return int(s, 16)
+    if all(ch.isdigit() for ch in s):
+        return int(s)
+    return int(s, 16)
 
 
 def get_json(path: str, default):
@@ -415,17 +418,21 @@ def next_unknown_label(registry):
 def sync_device_registry():
     registry = load_registry()
     topo_hosts = get_topology_hosts()
+    seen_now = set()
 
     for host in topo_hosts:
         mac = normalize_mac(host.get("mac", ""))
         if not mac:
             continue
 
+        seen_now.add(mac)
         port = host.get("port", {})
         dpid = str(port.get("dpid", "unknown"))
         port_no = str(port.get("port_no", "unknown"))
         ipv4 = host.get("ipv4", [])
         ipv6 = host.get("ipv6", [])
+
+        now = datetime.utcnow().isoformat()
 
         if mac in MAC_WHITELIST:
             base = MAC_WHITELIST[mac]
@@ -437,7 +444,9 @@ def sync_device_registry():
                 "dpid": dpid,
                 "port_no": port_no,
                 "ipv4": ipv4,
-                "ipv6": ipv6
+                "ipv6": ipv6,
+                "last_seen": now,
+                "currently_seen": True
             }
         else:
             if mac not in registry:
@@ -449,13 +458,21 @@ def sync_device_registry():
                     "dpid": dpid,
                     "port_no": port_no,
                     "ipv4": ipv4,
-                    "ipv6": ipv6
+                    "ipv6": ipv6,
+                    "last_seen": now,
+                    "currently_seen": True
                 }
             else:
                 registry[mac]["dpid"] = dpid
                 registry[mac]["port_no"] = port_no
                 registry[mac]["ipv4"] = ipv4
                 registry[mac]["ipv6"] = ipv6
+                registry[mac]["last_seen"] = now
+                registry[mac]["currently_seen"] = True
+
+    for mac in registry:
+        if mac not in seen_now:
+            registry[mac]["currently_seen"] = False
 
     save_registry(registry)
     return registry
@@ -465,14 +482,15 @@ def classify_host(mac: str):
     mac_norm = normalize_mac(mac)
     registry = sync_device_registry()
     quarantine_state = load_quarantine_state()
-
     info = registry.get(mac_norm)
+
     if not info:
         info = {
             "label": "Unregistered Device",
             "role": "IoT / Unregistered",
             "owner": "Unregistered",
-            "status": "Not Whitelisted"
+            "status": "Not Whitelisted",
+            "currently_seen": False
         }
 
     quarantined = quarantine_state.get(mac_norm, {}).get("quarantined", False)
@@ -486,7 +504,8 @@ def classify_host(mac: str):
             "status": "Quarantined",
             "badge_class": "badge-quarantined",
             "trusted": False,
-            "color": "#7a3eb1"
+            "color": "#7a3eb1",
+            "currently_seen": info.get("currently_seen", False)
         }
 
     role = info.get("role", "IoT / Unregistered")
@@ -499,7 +518,8 @@ def classify_host(mac: str):
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-approved-iot",
             "trusted": True,
-            "color": "#9b59b6"
+            "color": "#9b59b6",
+            "currently_seen": info.get("currently_seen", False)
         }
     elif role == "Trusted / Non-IoT":
         return {
@@ -510,7 +530,8 @@ def classify_host(mac: str):
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-trusted",
             "trusted": True,
-            "color": "#2ecc71"
+            "color": "#2ecc71",
+            "currently_seen": info.get("currently_seen", False)
         }
     else:
         return {
@@ -521,7 +542,8 @@ def classify_host(mac: str):
             "status": info.get("status", "Not Whitelisted"),
             "badge_class": "badge-iot",
             "trusted": False,
-            "color": "#e74c3c"
+            "color": "#e74c3c",
+            "currently_seen": info.get("currently_seen", False)
         }
 
 
@@ -539,7 +561,7 @@ def render_switch_tabs(active=None, target="flows"):
 
 
 # -------------------------------------------------------------------
-# Live APIs
+# APIs
 # -------------------------------------------------------------------
 @app.route("/api/topology")
 def api_topology():
@@ -554,12 +576,9 @@ def api_topology():
     nodes = []
     edges = []
 
-    switch_ids = set()
-
     if topo_switches:
         for sw in topo_switches:
             dpid = str(sw.get("dp", {}).get("id") or sw.get("dpid") or "unknown")
-            switch_ids.add(dpid)
             nodes.append({
                 "id": f"sw-{dpid}",
                 "label": friendly_switch_name(dpid),
@@ -570,7 +589,6 @@ def api_topology():
     else:
         for sw in stats_switches:
             dpid = str(sw)
-            switch_ids.add(dpid)
             nodes.append({
                 "id": f"sw-{dpid}",
                 "label": friendly_switch_name(dpid),
@@ -597,7 +615,7 @@ def api_topology():
                 })
 
     for host in topo_hosts:
-        mac = normalize_mac(host.get("mac", "unknown-mac"))
+        mac = normalize_mac(host.get("mac", ""))
         info = classify_host(mac)
 
         port = host.get("port", {})
@@ -644,37 +662,7 @@ def api_topology():
 
     return jsonify({
         "nodes": nodes,
-        "edges": edges,
-        "switches": topo_switches,
-        "links": topo_links,
-        "hosts": topo_hosts
-    })
-
-
-@app.route("/api/summary")
-def api_summary():
-    registry = sync_device_registry()
-    topo_hosts = get_topology_hosts()
-
-    trusted_count = 0
-    iot_count = 0
-    quarantined_count = 0
-
-    for host in topo_hosts:
-        info = classify_host(host.get("mac", ""))
-        if info["status"] == "Quarantined":
-            quarantined_count += 1
-        elif info["trusted"]:
-            trusted_count += 1
-        else:
-            iot_count += 1
-
-    return jsonify({
-        "switch_count": len(get_switches()),
-        "host_count": len(topo_hosts),
-        "trusted_count": trusted_count,
-        "iot_count": iot_count,
-        "quarantined_count": quarantined_count
+        "edges": edges
     })
 
 
@@ -683,33 +671,33 @@ def api_summary():
 # -------------------------------------------------------------------
 @app.route("/")
 def home():
-    html_content = """
+    registry = sync_device_registry()
+    switches = get_switches()
+    topo_hosts = get_topology_hosts()
+    quarantine_state = load_quarantine_state()
+
+    trusted = 0
+    iot = 0
+    quarantined = 0
+
+    for h in topo_hosts:
+        info = classify_host(h.get("mac", ""))
+        if info["status"] == "Quarantined":
+            quarantined += 1
+        elif info["trusted"]:
+            trusted += 1
+        else:
+            iot += 1
+
+    html_content = f"""
     <div class='card'>
         <h2>Controller Overview</h2>
-        <div id="summary_box">Loading summary...</div>
+        <p><b>Detected Switches:</b> {len(switches)}</p>
+        <p><b>Detected Hosts:</b> {len(topo_hosts)}</p>
+        <p><b>Whitelisted / Trusted Hosts:</b> {trusted}</p>
+        <p><b>IoT / Unregistered Hosts:</b> {iot}</p>
+        <p><b>Quarantined Hosts:</b> {quarantined}</p>
     </div>
-    <div id="switch_tabs_box"></div>
-
-    <script>
-    async function loadSummary() {
-        try {
-            const res = await fetch('/api/summary');
-            const data = await res.json();
-            document.getElementById('summary_box').innerHTML = `
-                <p><b>Detected Switches:</b> ${data.switch_count}</p>
-                <p><b>Detected Hosts:</b> ${data.host_count}</p>
-                <p><b>Whitelisted / Trusted Hosts:</b> ${data.trusted_count}</p>
-                <p><b>IoT / Unregistered Hosts:</b> ${data.iot_count}</p>
-                <p><b>Quarantined Hosts:</b> ${data.quarantined_count}</p>
-                <p>Use the topology graph to inspect devices by MAC, see where they are attached, and quarantine unknown endpoints.</p>
-            `;
-        } catch (e) {
-            document.getElementById('summary_box').innerHTML = 'Failed to load summary.';
-        }
-    }
-    loadSummary();
-    setInterval(loadSummary, 2000);
-    </script>
     """
     html_content += render_switch_tabs()
     return page(html_content)
@@ -720,8 +708,8 @@ def topology():
     html_content = """
     <h2>Live Topology</h2>
     <div class="note">
-        Blue = switches. Green = trusted / whitelisted devices. Purple = approved IoT or quarantined devices.
-        Red = unknown / unregistered devices. Click any node to inspect it. Quarantine moves the host logically to the quarantine switch in the SDN view.
+        The graph polls automatically every 1.5 seconds. Quarantine uses one-click buttons from the topology panel.
+        If a device disappears, it usually means the VM stopped sending traffic or went offline.
     </div>
 
     <div class="legend">
@@ -735,7 +723,6 @@ def topology():
         <div class="graph-panel">
             <svg id="topology_svg" viewBox="0 0 1600 760"></svg>
         </div>
-
         <div class="info-panel">
             <div class="info-box" id="node_info">
                 <h3>Node Details</h3>
@@ -757,18 +744,17 @@ def topology():
             const nodes = data.nodes || [];
             const edges = data.edges || [];
 
+            const switchNodes = nodes.filter(n => n.type === 'switch');
+            const hostNodes = nodes.filter(n => n.type === 'host');
+
             if (nodes.length === 0) {
                 svg.innerHTML = '<text x="40" y="40">No topology data available.</text>';
                 return;
             }
 
-            const switchNodes = nodes.filter(n => n.type === 'switch');
-            const hostNodes = nodes.filter(n => n.type === 'host');
-
             const positions = {};
             const centerY = 360;
 
-            // Spread switches much wider
             switchNodes.forEach((n, i) => {
                 const total = Math.max(1, switchNodes.length);
                 const spacing = total === 1 ? 0 : 700;
@@ -779,64 +765,45 @@ def topology():
                 };
             });
 
-            // Group hosts by switch and trust/quarantine status
-            const trustedBySwitch = {};
-            const iotBySwitch = {};
+            const topBySwitch = {};
+            const bottomBySwitch = {};
 
             hostNodes.forEach(n => {
                 const dpid = n.dpid || "unknown";
-                if (n.trusted || n.quarantined) {
-                    if (!trustedBySwitch[dpid]) trustedBySwitch[dpid] = [];
-                    trustedBySwitch[dpid].push(n);
+                const isTop = n.trusted || n.quarantined;
+                if (isTop) {
+                    if (!topBySwitch[dpid]) topBySwitch[dpid] = [];
+                    topBySwitch[dpid].push(n);
                 } else {
-                    if (!iotBySwitch[dpid]) iotBySwitch[dpid] = [];
-                    iotBySwitch[dpid].push(n);
+                    if (!bottomBySwitch[dpid]) bottomBySwitch[dpid] = [];
+                    bottomBySwitch[dpid].push(n);
                 }
             });
 
-            const trustedY = 140;
-            const iotY = 610;
-
-            Object.keys(trustedBySwitch).forEach(dpid => {
-                const arr = trustedBySwitch[dpid];
+            Object.keys(topBySwitch).forEach(dpid => {
+                const arr = topBySwitch[dpid];
                 const parent = positions['sw-' + dpid] || { x: 800, y: centerY };
                 const spacing = 240;
                 const startX = parent.x - ((arr.length - 1) * spacing) / 2;
 
                 arr.forEach((node, idx) => {
-                    positions[node.id] = {
-                        x: startX + idx * spacing,
-                        y: trustedY
-                    };
+                    positions[node.id] = { x: startX + idx * spacing, y: 140 };
                 });
             });
 
-            Object.keys(iotBySwitch).forEach(dpid => {
-                const arr = iotBySwitch[dpid];
+            Object.keys(bottomBySwitch).forEach(dpid => {
+                const arr = bottomBySwitch[dpid];
                 const parent = positions['sw-' + dpid] || { x: 800, y: centerY };
                 const spacing = 260;
                 const startX = parent.x - ((arr.length - 1) * spacing) / 2;
 
                 arr.forEach((node, idx) => {
-                    positions[node.id] = {
-                        x: startX + idx * spacing,
-                        y: iotY
-                    };
+                    positions[node.id] = { x: startX + idx * spacing, y: 610 };
                 });
-            });
-
-            hostNodes.forEach((node, idx) => {
-                if (!positions[node.id]) {
-                    positions[node.id] = {
-                        x: 120 + idx * 220,
-                        y: node.trusted ? trustedY : iotY
-                    };
-                }
             });
 
             edges.forEach(edge => {
                 if (!positions[edge.source] || !positions[edge.target]) return;
-
                 const s = positions[edge.source];
                 const t = positions[edge.target];
 
@@ -934,7 +901,7 @@ def topology():
                     const ipv4 = (node.ipv4 && node.ipv4.length) ? node.ipv4.join(', ') : 'None';
                     const ipv6 = (node.ipv6 && node.ipv6.length) ? node.ipv6.join(', ') : 'None';
 
-                    let actionButtons = `
+                    let buttonHtml = `
                         <form method="post" action="/quarantineflow">
                             <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
                             <input type="hidden" name="priority" value="100">
@@ -944,7 +911,7 @@ def topology():
                     `;
 
                     if (node.quarantined) {
-                        actionButtons = `
+                        buttonHtml = `
                             <form method="post" action="/unquarantineflow">
                                 <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
                                 <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
@@ -966,15 +933,13 @@ def topology():
                         <p><b>Displayed Port:</b> ${node.port_no}</p>
                         <p><b>Real Switch:</b> ${node.real_dpid || node.dpid}</p>
                         <p><b>Real Port:</b> ${node.real_port_no || node.port_no}</p>
-                        ${actionButtons}
-                        <p style="margin-top:12px;"><a href="/flows?dpid=${node.real_dpid || node.dpid}">View Flow Table</a></p>
+                        ${buttonHtml}
                     `;
                 }
             }
-
         } catch (e) {
-            const svg = document.getElementById('topology_svg');
-            svg.innerHTML = '<text x="40" y="40">Topology query failed.</text>';
+            document.getElementById('topology_svg').innerHTML =
+                '<text x="40" y="40">Topology query failed.</text>';
         }
     }
 
@@ -987,67 +952,64 @@ def topology():
 
 @app.route("/hosts")
 def hosts():
-    registry = sync_device_registry()
+    sync_device_registry()
+    registry = load_registry()
     quarantine_state = load_quarantine_state()
-    topo_hosts = get_topology_hosts()
-
-    html_content = "<h2>Host Discovery</h2>"
-    html_content += """
-    <div class='note'>
-        Devices are named automatically from the registry. Unknown devices get a stable friendly name instead of just showing 'Unregistered'.
-        This page refreshes automatically.
-    </div>
-    """
 
     rows = ""
-    for host in topo_hosts:
-        host_mac = normalize_mac(host.get("mac", ""))
-        port = host.get("port", {})
-        info = classify_host(host_mac)
-
-        dpid = str(port.get("dpid", "unknown"))
-        port_no = str(port.get("port_no", "unknown"))
-        quarantined = quarantine_state.get(host_mac, {}).get("quarantined", False)
+    for mac, entry in registry.items():
+        info = classify_host(mac)
+        dpid = entry.get("dpid", "unknown")
+        port_no = entry.get("port_no", "unknown")
+        currently_seen = entry.get("currently_seen", False)
 
         badge_class = info["badge_class"]
         badge_text = info["role"]
-        if quarantined:
+
+        if info["status"] == "Quarantined":
             badge_class = "badge-quarantined"
             badge_text = "Quarantined"
 
+        seen_text = "Online" if currently_seen else "Offline / Not currently seen"
         badge = f"<span class='badge {badge_class}'>{html.escape(badge_text)}</span>"
 
         control_html = f"""
         <form class="inline-form" method="post" action="/quarantineflow">
             <input type="hidden" name="dpid" value="{dpid}">
             <input type="hidden" name="priority" value="100">
-            <input type="hidden" name="match" value='{html.escape(json.dumps({"eth_src": host_mac}))}'>
+            <input type="hidden" name="match" value='{html.escape(json.dumps({"eth_src": mac}))}'>
             <button type="submit" class="small-btn quarantine-btn">Quarantine</button>
         </form>
         """
 
-        if quarantined:
+        if info["status"] == "Quarantined":
             control_html = f"""
             <form class="inline-form" method="post" action="/unquarantineflow">
                 <input type="hidden" name="dpid" value="{dpid}">
-                <input type="hidden" name="match" value='{html.escape(json.dumps({"eth_src": host_mac}))}'>
+                <input type="hidden" name="match" value='{html.escape(json.dumps({"eth_src": mac}))}'>
                 <button type="submit" class="small-btn unquarantine-btn">Unquarantine</button>
             </form>
             """
 
         rows += f"""
         <tr>
-            <td>{html.escape(info['label'])}</td>
-            <td>{html.escape(host_mac)}</td>
+            <td>{html.escape(entry.get('label', 'Unknown Device'))}</td>
+            <td>{html.escape(mac)}</td>
             <td>{badge}</td>
-            <td>{html.escape(info['owner'])}</td>
-            <td>{html.escape(friendly_switch_name(dpid))}</td>
-            <td>{html.escape(port_no)}</td>
+            <td>{html.escape(entry.get('owner', 'Unregistered'))}</td>
+            <td>{html.escape(friendly_switch_name(str(dpid)))}</td>
+            <td>{html.escape(str(port_no))}</td>
+            <td>{html.escape(seen_text)}</td>
             <td>{control_html}</td>
         </tr>
         """
 
-    html_content += """
+    html_content = """
+    <h2>Host Discovery</h2>
+    <div class='note'>
+        Devices stay in the registry even if they temporarily disappear from live topology.
+        If Test_IoT_Device is missing, generate traffic from it again so Ryu sees it.
+    </div>
     <table>
         <tr>
             <th>Device Name</th>
@@ -1056,10 +1018,11 @@ def hosts():
             <th>Owner</th>
             <th>Switch</th>
             <th>Port</th>
+            <th>Seen State</th>
             <th>Action</th>
         </tr>
     """
-    html_content += rows if rows else "<tr><td colspan='7'>No hosts detected.</td></tr>"
+    html_content += rows if rows else "<tr><td colspan='8'>No devices in registry.</td></tr>"
     html_content += "</table>"
 
     return page(html_content)
@@ -1102,8 +1065,6 @@ def flows():
         bytes_ = f.get("byte_count", "")
         actions = f.get("actions", [])
 
-        match_json = safe_json_dumps(match)
-
         rows += f"""
         <tr>
             <td>{priority}</td>
@@ -1111,14 +1072,6 @@ def flows():
             <td>{packets}</td>
             <td>{bytes_}</td>
             <td><pre>{html.escape(json.dumps(actions, indent=2))}</pre></td>
-            <td>
-                <form class="inline-form" method="post" action="/deleteflow">
-                    <input type="hidden" name="dpid" value="{dpid}">
-                    <input type="hidden" name="priority" value="{priority}">
-                    <input type="hidden" name="match" value="{match_json}">
-                    <button type="submit" class="delete-btn">Delete</button>
-                </form>
-            </td>
         </tr>
         """
 
@@ -1139,10 +1092,9 @@ def flows():
             <th>Packets</th>
             <th>Bytes</th>
             <th>Actions</th>
-            <th>Control</th>
         </tr>
     """
-    html_content += rows if rows else "<tr><td colspan='6'>No flows found.</td></tr>"
+    html_content += rows if rows else "<tr><td colspan='5'>No flows found.</td></tr>"
     html_content += "</table>"
     return page(html_content)
 
@@ -1196,7 +1148,7 @@ def flowcontrol():
     if request.method == "POST":
         try:
             payload = {
-                "dpid": int(request.form["dpid"]),
+                "dpid": dpid_to_int(request.form["dpid"]),
                 "priority": int(request.form["priority"]),
                 "match": json.loads(request.form["match"]),
                 "actions": json.loads(request.form["actions"])
@@ -1231,61 +1183,15 @@ def flowcontrol():
     return page(html_content)
 
 
-@app.route("/quarantine", methods=["GET", "POST"])
+@app.route("/quarantine")
 def quarantine():
-    msg = ""
-    err = ""
-    sws = get_switches()
-    dpid = sws[0] if sws else ""
-
-    if request.method == "POST":
-        try:
-            payload = {
-                "dpid": int(request.form["dpid"]),
-                "priority": int(request.form["priority"]),
-                "match": json.loads(request.form["match"]),
-                "actions": [
-                    {
-                        "type": "OUTPUT",
-                        "port": int(request.form["quarantine_port"])
-                    }
-                ]
-            }
-            response_text = post_json("/stats/flowentry/add", payload)
-            msg = f"Quarantine rule response: {response_text}"
-        except Exception as e:
-            err = str(e)
-
-    html_content = "<h2>Quarantine Control</h2>"
-    html_content += """
+    return page("""
+    <h2>Quarantine</h2>
     <div class='note'>
-        Normal use should be one-click quarantine from the topology or host discovery pages.
-        This page is only for manual testing.
+        Use one-click quarantine from the Topology or Host Discovery pages.
+        This avoids manual JSON and keeps the dashboard state consistent.
     </div>
-    """
-    if msg:
-        html_content += f"<div class='msg'>{html.escape(msg)}</div>"
-    if err:
-        html_content += f"<div class='err'>{html.escape(err)}</div>"
-
-    html_content += render_switch_tabs(active=dpid, target="quarantine")
-    html_content += f"""
-    <div class="card">
-        <h3>Send Traffic to Quarantine Port</h3>
-        <form method="post">
-            <label>DPID</label>
-            <input name="dpid" value="{dpid}">
-            <label>Priority</label>
-            <input name="priority" value="500">
-            <label>Match JSON</label>
-            <textarea name="match">{{"in_port": 1}}</textarea>
-            <label>Quarantine Port</label>
-            <input name="quarantine_port" value="2">
-            <button type="submit" class="quarantine-btn">Apply Quarantine</button>
-        </form>
-    </div>
-    """
-    return page(html_content)
+    """)
 
 
 # -------------------------------------------------------------------
@@ -1294,7 +1200,7 @@ def quarantine():
 @app.route("/deleteflow", methods=["POST"])
 def deleteflow():
     try:
-        dpid = int(request.form["dpid"])
+        dpid = dpid_to_int(request.form["dpid"])
         priority = int(request.form["priority"])
         match = json.loads(request.form["match"])
 
@@ -1305,25 +1211,30 @@ def deleteflow():
         }
 
         post_json("/stats/flowentry/delete", payload)
-        return redirect(url_for("flows", dpid=dpid, msg="deleted"))
+        return redirect(url_for("flows", dpid=request.form["dpid"], msg="deleted"))
     except Exception as e:
         return page(f"<div class='err'>Delete failed: {html.escape(str(e))}</div>")
 
 
-@app.route("/quarantineflow", methods=["POST"])
+@app.route("/quarantineflow", methods=["GET", "POST"])
 def quarantineflow():
+    if request.method == "GET":
+        return redirect(url_for("topology"))
+
     try:
-        dpid = str(request.form["dpid"])
+        dpid_raw = str(request.form["dpid"])
         match = json.loads(request.form["match"])
         original_priority = int(request.form.get("priority", "100"))
         quarantine_priority = max(original_priority + 100, 500)
 
         mac = normalize_mac(match.get("eth_src", ""))
-        quarantine_switch = "0000000000000222" if "0000000000000222" in [str(s) for s in get_switches()] else dpid
-        quarantine_port = QUARANTINE_PORTS.get(dpid, 2)
+        switch_ids = [str(s) for s in get_switches()]
+
+        quarantine_switch = "00000000bada222" if "00000000bada222" in switch_ids else dpid_raw
+        quarantine_port = QUARANTINE_PORTS.get(dpid_raw, 2)
 
         payload = {
-            "dpid": int(dpid),
+            "dpid": dpid_to_int(dpid_raw),
             "priority": quarantine_priority,
             "match": match,
             "actions": [
@@ -1339,7 +1250,7 @@ def quarantineflow():
         state = load_quarantine_state()
         state[mac] = {
             "quarantined": True,
-            "real_switch": dpid,
+            "real_switch": dpid_raw,
             "quarantine_switch": quarantine_switch,
             "quarantine_port": quarantine_port
         }
@@ -1350,16 +1261,18 @@ def quarantineflow():
         return page(f"<div class='err'>Quarantine failed: {html.escape(str(e))}</div>")
 
 
-@app.route("/unquarantineflow", methods=["POST"])
+@app.route("/unquarantineflow", methods=["GET", "POST"])
 def unquarantineflow():
+    if request.method == "GET":
+        return redirect(url_for("topology"))
+
     try:
-        dpid = int(request.form["dpid"])
+        dpid_raw = str(request.form["dpid"])
         match = json.loads(request.form["match"])
         mac = normalize_mac(match.get("eth_src", ""))
 
-        # Best-effort delete of the quarantine flow
         payload = {
-            "dpid": dpid,
+            "dpid": dpid_to_int(dpid_raw),
             "priority": 500,
             "match": match
         }
@@ -1368,7 +1281,7 @@ def unquarantineflow():
         state = load_quarantine_state()
         if mac in state:
             del state[mac]
-            save_quarantine_state(state)
+        save_quarantine_state(state)
 
         return redirect(url_for("topology"))
     except Exception as e:

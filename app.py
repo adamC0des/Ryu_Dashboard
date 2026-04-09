@@ -10,9 +10,8 @@ REFRESH_SECONDS = 10
 
 # ============================================================
 # MAC WHITELIST
-# Add your approved / known devices here.
-# Key = MAC address in lowercase
-# Value = metadata for labeling/classification
+# Add approved devices here.
+# Unknown MACs will be treated as IoT / Unregistered.
 # ============================================================
 MAC_WHITELIST = {
     "00:00:00:00:00:01": {
@@ -24,15 +23,9 @@ MAC_WHITELIST = {
         "label": "Security Workstation",
         "role": "Trusted / Non-IoT",
         "owner": "SOC"
-    },
-    "b8:27:eb:12:34:56": {
-        "label": "Approved Raspberry Pi Sensor",
-        "role": "Approved IoT",
-        "owner": "Lab"
     }
 }
 
-# If MAC is not in the whitelist, classify it as IoT/unregistered
 DEFAULT_UNKNOWN_ROLE = "IoT / Unregistered"
 
 BASE = f"""
@@ -187,45 +180,6 @@ pre {{
     font-size: 12px;
     color: #555;
 }}
-.topology-wrap {{
-    display: flex;
-    gap: 20px;
-    flex-wrap: wrap;
-}}
-.topology-box {{
-    min-width: 260px;
-    flex: 1;
-    background: #fafafa;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 16px;
-}}
-.node {{
-    padding: 10px 12px;
-    margin: 8px 0;
-    border-radius: 6px;
-    font-weight: bold;
-}}
-.node-switch {{
-    background: #d8eced;
-    border: 1px solid #7eb0b4;
-}}
-.node-host {{
-    background: #f6e4cf;
-    border: 1px solid #d2a56b;
-}}
-.node-host-whitelist {{
-    background: #dff3df;
-    border: 1px solid #73b173;
-}}
-.node-host-iot {{
-    background: #ffe2e2;
-    border: 1px solid #d27a7a;
-}}
-.link-row {{
-    padding: 8px 0;
-    border-bottom: 1px solid #eee;
-}}
 .badge {{
     display: inline-block;
     padding: 4px 8px;
@@ -244,6 +198,37 @@ pre {{
 .badge-approved-iot {{
     background: #efe3ff;
     color: #5b2a86;
+}}
+.graph-wrap {{
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}}
+.graph-panel {{
+    flex: 2;
+    min-width: 700px;
+}}
+.info-panel {{
+    flex: 1;
+    min-width: 280px;
+}}
+svg {{
+    width: 100%;
+    height: 620px;
+    background: #fbfbfb;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}}
+.node-label {{
+    font-size: 12px;
+    font-weight: bold;
+    pointer-events: none;
+}}
+.info-box {{
+    background: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
 }}
 </style>
 </head>
@@ -319,10 +304,10 @@ def classify_host(mac: str):
         owner = info.get("owner", "Unknown")
         if role == "Approved IoT":
             badge_class = "badge-approved-iot"
-            node_class = "node-host-whitelist"
+            color = "#9b59b6"
         else:
             badge_class = "badge-trusted"
-            node_class = "node-host-whitelist"
+            color = "#2ecc71"
         return {
             "mac": mac_norm,
             "label": label,
@@ -330,8 +315,8 @@ def classify_host(mac: str):
             "owner": owner,
             "status": "Whitelisted",
             "badge_class": badge_class,
-            "node_class": node_class,
-            "trusted": True
+            "trusted": True,
+            "color": color
         }
 
     return {
@@ -341,8 +326,8 @@ def classify_host(mac: str):
         "owner": "Unregistered",
         "status": "Not Whitelisted",
         "badge_class": "badge-iot",
-        "node_class": "node-host-iot",
-        "trusted": False
+        "trusted": False,
+        "color": "#e74c3c"
     }
 
 def render_switch_tabs(active=None, target="flows"):
@@ -364,23 +349,81 @@ def api_topology():
     topo_links = get_topology_links()
     topo_hosts = get_topology_hosts()
 
-    enriched_hosts = []
+    nodes = []
+    edges = []
+
+    switch_ids = []
+
+    if topo_switches:
+        for sw in topo_switches:
+            dpid = sw.get("dp", {}).get("id") or sw.get("dpid") or "unknown"
+            switch_ids.append(str(dpid))
+            nodes.append({
+                "id": f"sw-{dpid}",
+                "label": f"SW_{str(dpid)[-3:]}",
+                "type": "switch",
+                "dpid": str(dpid),
+                "color": "#3498db"
+            })
+    else:
+        for sw in stats_switches:
+            switch_ids.append(str(sw))
+            nodes.append({
+                "id": f"sw-{sw}",
+                "label": f"SW_{str(sw)[-3:]}",
+                "type": "switch",
+                "dpid": str(sw),
+                "color": "#3498db"
+            })
+
+    for link in topo_links:
+        src = link.get("src", {})
+        dst = link.get("dst", {})
+        src_id = src.get("dpid")
+        dst_id = dst.get("dpid")
+        if src_id and dst_id:
+            edges.append({
+                "source": f"sw-{src_id}",
+                "target": f"sw-{dst_id}",
+                "label": f"{src.get('port_no', '?')}→{dst.get('port_no', '?')}",
+                "type": "switch-link"
+            })
+
     for host in topo_hosts:
-        host_mac = host.get("mac", "")
-        info = classify_host(host_mac)
-        enriched_hosts.append({
-            "mac": host_mac,
-            "classification": info
+        mac = host.get("mac", "unknown-mac")
+        info = classify_host(mac)
+        port = host.get("port", {})
+        dpid = port.get("dpid", "unknown")
+        port_no = port.get("port_no", "unknown")
+
+        nodes.append({
+            "id": f"host-{mac}",
+            "label": info["label"],
+            "type": "host",
+            "mac": mac,
+            "role": info["role"],
+            "owner": info["owner"],
+            "status": info["status"],
+            "dpid": str(dpid),
+            "port_no": str(port_no),
+            "color": info["color"],
+            "trusted": info["trusted"]
         })
 
-    result = {
-        "stats_switches": stats_switches,
-        "topology_switches": topo_switches,
-        "topology_links": topo_links,
-        "topology_hosts": topo_hosts,
-        "classified_hosts": enriched_hosts
-    }
-    return jsonify(result)
+        edges.append({
+            "source": f"host-{mac}",
+            "target": f"sw-{dpid}",
+            "label": f"port {port_no}",
+            "type": "host-link"
+        })
+
+    return jsonify({
+        "nodes": nodes,
+        "edges": edges,
+        "switches": topo_switches,
+        "links": topo_links,
+        "hosts": topo_hosts
+    })
 
 @app.route("/")
 def home():
@@ -396,7 +439,7 @@ def home():
     html_content += f"<p><b>Detected Hosts:</b> {len(topo_hosts)}</p>"
     html_content += f"<p><b>Whitelisted / Trusted Hosts:</b> {trusted_count}</p>"
     html_content += f"<p><b>IoT / Unregistered Hosts:</b> {iot_count}</p>"
-    html_content += "<p>Use Host Discovery to classify devices by MAC address and identify unknown IoT endpoints.</p></div>"
+    html_content += "<p>Use the topology graph to inspect devices by MAC, see where they are attached, and quarantine unknown endpoints.</p></div>"
     html_content += render_switch_tabs()
     return page(html_content)
 
@@ -405,24 +448,20 @@ def topology():
     html_content = """
     <h2>Live Topology</h2>
     <div class="note">
-        This page polls the controller for topology data in real time. If Ryu exposes /v1.0/topology/*,
-        you will see switches, links, and hosts. Hosts are classified using the MAC whitelist.
+        Blue = switches. Green = trusted / whitelisted devices. Red = IoT / unregistered devices.
+        Click any node to inspect it. Unknown hosts are ideal quarantine candidates.
     </div>
 
-    <div class="topology-wrap">
-        <div class="topology-box">
-            <h3>Switches</h3>
-            <div id="switches_box">Loading...</div>
+    <div class="graph-wrap">
+        <div class="graph-panel">
+            <svg id="topology_svg" viewBox="0 0 1200 620"></svg>
         </div>
 
-        <div class="topology-box">
-            <h3>Links</h3>
-            <div id="links_box">Loading...</div>
-        </div>
-
-        <div class="topology-box">
-            <h3>Hosts</h3>
-            <div id="hosts_box">Loading...</div>
+        <div class="info-panel">
+            <div class="info-box" id="node_info">
+                <h3>Node Details</h3>
+                <p>Click a switch or host in the topology graph.</p>
+            </div>
         </div>
     </div>
 
@@ -432,67 +471,154 @@ def topology():
             const res = await fetch('/api/topology');
             const data = await res.json();
 
-            const switchesBox = document.getElementById('switches_box');
-            const linksBox = document.getElementById('links_box');
-            const hostsBox = document.getElementById('hosts_box');
+            const svg = document.getElementById('topology_svg');
+            const info = document.getElementById('node_info');
+            svg.innerHTML = '';
 
-            let switchHtml = "";
-            let linkHtml = "";
-            let hostHtml = "";
+            const nodes = data.nodes || [];
+            const edges = data.edges || [];
 
-            if (data.topology_switches && data.topology_switches.length > 0) {
-                data.topology_switches.forEach(sw => {
-                    const dpid = sw.dp ? sw.dp.id : (sw.dpid || JSON.stringify(sw));
-                    switchHtml += `<div class="node node-switch">${dpid}</div>`;
-                });
-            } else if (data.stats_switches && data.stats_switches.length > 0) {
-                data.stats_switches.forEach(sw => {
-                    switchHtml += `<div class="node node-switch">DPID ${sw}</div>`;
-                });
-                switchHtml += `<div class="small">Using switch-only fallback from /stats/switches</div>`;
-            } else {
-                switchHtml = "No switches detected.";
+            if (nodes.length === 0) {
+                svg.innerHTML = '<text x="40" y="40">No topology data available.</text>';
+                return;
             }
 
-            if (data.topology_links && data.topology_links.length > 0) {
-                data.topology_links.forEach(link => {
-                    const src = link.src ? `${link.src.dpid}:${link.src.port_no}` : "unknown";
-                    const dst = link.dst ? `${link.dst.dpid}:${link.dst.port_no}` : "unknown";
-                    linkHtml += `<div class="link-row">${src} → ${dst}</div>`;
-                });
-            } else {
-                linkHtml = "No live links detected.";
-            }
+            const switchNodes = nodes.filter(n => n.type === 'switch');
+            const hostNodes = nodes.filter(n => n.type === 'host');
 
-            if (data.topology_hosts && data.topology_hosts.length > 0) {
-                data.topology_hosts.forEach((host, idx) => {
-                    const mac = host.mac || "unknown-mac";
-                    const attach = host.port ? `${host.port.dpid}:${host.port.port_no}` : "unknown-port";
-                    const cls = data.classified_hosts[idx] ? data.classified_hosts[idx].classification : null;
-                    const role = cls ? cls.role : "Unknown";
-                    const label = cls ? cls.label : "Unknown Device";
-                    const nodeClass = cls ? cls.node_class : "node-host";
-                    hostHtml += `
-                        <div class="node ${nodeClass}">
-                            ${label}<br>
-                            <span class="small">${mac}</span><br>
-                            <span class="small">${attach}</span><br>
-                            <span class="small">${role}</span>
-                        </div>
+            const positions = {};
+            const centerY = 280;
+
+            // Lay out switches across the center
+            switchNodes.forEach((n, i) => {
+                const x = 250 + i * (700 / Math.max(1, switchNodes.length - 1 || 1));
+                positions[n.id] = { x, y: centerY };
+            });
+
+            // Hosts above/below by trust status
+            let trustedIndex = 0;
+            let iotIndex = 0;
+
+            hostNodes.forEach((n) => {
+                const parentX = positions['sw-' + n.dpid] ? positions['sw-' + n.dpid].x : 600;
+
+                if (n.trusted) {
+                    positions[n.id] = {
+                        x: parentX - 80 + (trustedIndex % 3) * 80,
+                        y: 120 + Math.floor(trustedIndex / 3) * 70
+                    };
+                    trustedIndex++;
+                } else {
+                    positions[n.id] = {
+                        x: parentX - 80 + (iotIndex % 3) * 80,
+                        y: 430 + Math.floor(iotIndex / 3) * 70
+                    };
+                    iotIndex++;
+                }
+            });
+
+            // Draw edges
+            edges.forEach(edge => {
+                if (!positions[edge.source] || !positions[edge.target]) return;
+
+                const s = positions[edge.source];
+                const t = positions[edge.target];
+
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', s.x);
+                line.setAttribute('y1', s.y);
+                line.setAttribute('x2', t.x);
+                line.setAttribute('y2', t.y);
+                line.setAttribute('stroke', edge.type === 'switch-link' ? '#777' : '#aaa');
+                line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '2');
+                svg.appendChild(line);
+
+                const tx = (s.x + t.x) / 2;
+                const ty = (s.y + t.y) / 2 - 6;
+                const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                label.setAttribute('x', tx);
+                label.setAttribute('y', ty);
+                label.setAttribute('text-anchor', 'middle');
+                label.setAttribute('font-size', '11');
+                label.textContent = edge.label || '';
+                svg.appendChild(label);
+            });
+
+            // Draw nodes
+            nodes.forEach(node => {
+                const p = positions[node.id];
+                if (!p) return;
+
+                if (node.type === 'switch') {
+                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    rect.setAttribute('x', p.x - 42);
+                    rect.setAttribute('y', p.y - 25);
+                    rect.setAttribute('width', 84);
+                    rect.setAttribute('height', 50);
+                    rect.setAttribute('rx', 8);
+                    rect.setAttribute('fill', node.color || '#3498db');
+                    rect.setAttribute('stroke', '#1f4f73');
+                    rect.setAttribute('stroke-width', '2');
+                    rect.style.cursor = 'pointer';
+                    rect.addEventListener('click', () => showNodeInfo(node));
+                    svg.appendChild(rect);
+                } else {
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', p.x);
+                    circle.setAttribute('cy', p.y);
+                    circle.setAttribute('r', 24);
+                    circle.setAttribute('fill', node.color || '#e74c3c');
+                    circle.setAttribute('stroke', '#333');
+                    circle.setAttribute('stroke-width', '2');
+                    circle.style.cursor = 'pointer';
+                    circle.addEventListener('click', () => showNodeInfo(node));
+                    svg.appendChild(circle);
+                }
+
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', p.x);
+                text.setAttribute('y', p.y + (node.type === 'switch' ? 5 : 40));
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('class', 'node-label');
+                text.textContent = node.label;
+                svg.appendChild(text);
+            });
+
+            function showNodeInfo(node) {
+                if (node.type === 'switch') {
+                    info.innerHTML = `
+                        <h3>Switch Details</h3>
+                        <p><b>Label:</b> ${node.label}</p>
+                        <p><b>DPID:</b> ${node.dpid}</p>
+                        <p><a href="/flows?dpid=${node.dpid}">View Flow Table</a></p>
+                        <p><a href="/ports?dpid=${node.dpid}">View Port Stats</a></p>
                     `;
-                });
-            } else {
-                hostHtml = "No hosts detected.";
-            }
+                } else {
+                    info.innerHTML = `
+                        <h3>Host Details</h3>
+                        <p><b>Label:</b> ${node.label}</p>
+                        <p><b>MAC:</b> ${node.mac}</p>
+                        <p><b>Role:</b> ${node.role}</p>
+                        <p><b>Owner:</b> ${node.owner}</p>
+                        <p><b>Status:</b> ${node.status}</p>
+                        <p><b>Attached Switch:</b> ${node.dpid}</p>
+                        <p><b>Port:</b> ${node.port_no}</p>
 
-            switchesBox.innerHTML = switchHtml;
-            linksBox.innerHTML = linkHtml;
-            hostsBox.innerHTML = hostHtml;
+                        <form method="post" action="/quarantineflow">
+                            <input type="hidden" name="dpid" value="${node.dpid}">
+                            <input type="hidden" name="priority" value="100">
+                            <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
+                            <button class="quarantine-btn" type="submit">Quarantine Host</button>
+                        </form>
+
+                        <p style="margin-top:12px;"><a href="/flows?dpid=${node.dpid}">View Flow Table</a></p>
+                    `;
+                }
+            }
 
         } catch (e) {
-            document.getElementById('switches_box').innerHTML = "Topology query failed.";
-            document.getElementById('links_box').innerHTML = "Topology query failed.";
-            document.getElementById('hosts_box').innerHTML = "Topology query failed.";
+            const svg = document.getElementById('topology_svg');
+            svg.innerHTML = '<text x="40" y="40">Topology query failed.</text>';
         }
     }
 

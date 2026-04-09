@@ -2,6 +2,7 @@ from flask import Flask, request, redirect, url_for, jsonify
 import requests
 import json
 import html
+import math
 
 app = Flask(__name__)
 
@@ -9,20 +10,39 @@ RYU = "http://127.0.0.1:8080"
 REFRESH_SECONDS = 10
 
 # ============================================================
-# MAC WHITELIST
-# Add approved devices here.
+# FRIENDLY SWITCH LABELS
+# Replace these DPIDs with your exact switch IDs if needed.
+# ============================================================
+SWITCH_LABELS = {
+    "0000000000000111": "Main Switch",
+    "0000000000000222": "Quarantine Switch"
+}
+
+# ============================================================
+# MAC WHITELIST / DEVICE LABELS
+# Add approved known devices here.
 # Unknown MACs will be treated as IoT / Unregistered.
 # ============================================================
 MAC_WHITELIST = {
     "00:00:00:00:00:01": {
-        "label": "Engineering Laptop",
+        "label": "Trusted Laptop",
         "role": "Trusted / Non-IoT",
         "owner": "Admin"
     },
     "00:00:00:00:00:02": {
-        "label": "Security Workstation",
+        "label": "Engineering Workstation",
         "role": "Trusted / Non-IoT",
-        "owner": "SOC"
+        "owner": "Lab"
+    },
+    "00:00:00:00:00:03": {
+        "label": "Approved IoT Camera",
+        "role": "Approved IoT",
+        "owner": "Lab"
+    },
+    "00:0c:29:16:37:b5": {
+        "label": "IoT Test Device",
+        "role": "Approved IoT",
+        "owner": "Lab"
     }
 }
 
@@ -206,15 +226,15 @@ pre {{
 }}
 .graph-panel {{
     flex: 2;
-    min-width: 700px;
+    min-width: 760px;
 }}
 .info-panel {{
     flex: 1;
-    min-width: 280px;
+    min-width: 320px;
 }}
 svg {{
     width: 100%;
-    height: 620px;
+    height: 740px;
     background: #fbfbfb;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -229,6 +249,26 @@ svg {{
     border: 1px solid #ddd;
     border-radius: 8px;
     padding: 16px;
+}}
+.legend {{
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 15px;
+}}
+.legend-item {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 12px;
+}}
+.legend-color {{
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
 }}
 </style>
 </head>
@@ -295,6 +335,10 @@ def get_topology_hosts():
 def normalize_mac(mac: str) -> str:
     return (mac or "").strip().lower()
 
+def friendly_switch_name(dpid: str) -> str:
+    dpid = str(dpid)
+    return SWITCH_LABELS.get(dpid, f"SW_{dpid[-3:]}")
+
 def classify_host(mac: str):
     mac_norm = normalize_mac(mac)
     if mac_norm in MAC_WHITELIST:
@@ -302,12 +346,14 @@ def classify_host(mac: str):
         role = info.get("role", "Trusted / Non-IoT")
         label = info.get("label", "Whitelisted Device")
         owner = info.get("owner", "Unknown")
+
         if role == "Approved IoT":
             badge_class = "badge-approved-iot"
             color = "#9b59b6"
         else:
             badge_class = "badge-trusted"
             color = "#2ecc71"
+
         return {
             "mac": mac_norm,
             "label": label,
@@ -337,7 +383,7 @@ def render_switch_tabs(active=None, target="flows"):
 
     html_parts = []
     for s in sws:
-        label = f"SW_{str(s)[-3:]}"
+        label = friendly_switch_name(str(s))
         cls = "switch active" if str(s) == str(active) else "switch"
         html_parts.append(f'<a class="{cls}" href="/{target}?dpid={s}">{label}</a>')
     return "".join(html_parts)
@@ -352,42 +398,43 @@ def api_topology():
     nodes = []
     edges = []
 
-    switch_ids = []
-
     if topo_switches:
         for sw in topo_switches:
             dpid = sw.get("dp", {}).get("id") or sw.get("dpid") or "unknown"
-            switch_ids.append(str(dpid))
             nodes.append({
                 "id": f"sw-{dpid}",
-                "label": f"SW_{str(dpid)[-3:]}",
+                "label": friendly_switch_name(str(dpid)),
                 "type": "switch",
                 "dpid": str(dpid),
                 "color": "#3498db"
             })
     else:
         for sw in stats_switches:
-            switch_ids.append(str(sw))
             nodes.append({
                 "id": f"sw-{sw}",
-                "label": f"SW_{str(sw)[-3:]}",
+                "label": friendly_switch_name(str(sw)),
                 "type": "switch",
                 "dpid": str(sw),
                 "color": "#3498db"
             })
 
+    seen_switch_links = set()
     for link in topo_links:
         src = link.get("src", {})
         dst = link.get("dst", {})
-        src_id = src.get("dpid")
-        dst_id = dst.get("dpid")
-        if src_id and dst_id:
-            edges.append({
-                "source": f"sw-{src_id}",
-                "target": f"sw-{dst_id}",
-                "label": f"{src.get('port_no', '?')}→{dst.get('port_no', '?')}",
-                "type": "switch-link"
-            })
+        src_id = str(src.get("dpid"))
+        dst_id = str(dst.get("dpid"))
+
+        if src_id and dst_id and src_id != "None" and dst_id != "None":
+            key = tuple(sorted([src_id, dst_id]))
+            if key not in seen_switch_links:
+                seen_switch_links.add(key)
+                edges.append({
+                    "source": f"sw-{src_id}",
+                    "target": f"sw-{dst_id}",
+                    "label": f"{src.get('port_no', '?')}↔{dst.get('port_no', '?')}",
+                    "type": "switch-link"
+                })
 
     for host in topo_hosts:
         mac = host.get("mac", "unknown-mac")
@@ -395,6 +442,8 @@ def api_topology():
         port = host.get("port", {})
         dpid = port.get("dpid", "unknown")
         port_no = port.get("port_no", "unknown")
+        ipv4 = host.get("ipv4", [])
+        ipv6 = host.get("ipv6", [])
 
         nodes.append({
             "id": f"host-{mac}",
@@ -406,6 +455,8 @@ def api_topology():
             "status": info["status"],
             "dpid": str(dpid),
             "port_no": str(port_no),
+            "ipv4": ipv4,
+            "ipv6": ipv6,
             "color": info["color"],
             "trusted": info["trusted"]
         })
@@ -448,13 +499,20 @@ def topology():
     html_content = """
     <h2>Live Topology</h2>
     <div class="note">
-        Blue = switches. Green = trusted / whitelisted devices. Red = IoT / unregistered devices.
-        Click any node to inspect it. Unknown hosts are ideal quarantine candidates.
+        Blue = switches. Green = trusted / whitelisted devices. Purple = approved IoT. Red = unknown / unregistered IoT.
+        Click any node to inspect it. Layout spacing is widened so host labels do not overwrite each other.
+    </div>
+
+    <div class="legend">
+        <div class="legend-item"><div class="legend-color" style="background:#3498db;"></div> Switch</div>
+        <div class="legend-item"><div class="legend-color" style="background:#2ecc71;"></div> Trusted / Non-IoT</div>
+        <div class="legend-item"><div class="legend-color" style="background:#9b59b6;"></div> Approved IoT</div>
+        <div class="legend-item"><div class="legend-color" style="background:#e74c3c;"></div> Unknown / Unregistered</div>
     </div>
 
     <div class="graph-wrap">
         <div class="graph-panel">
-            <svg id="topology_svg" viewBox="0 0 1200 620"></svg>
+            <svg id="topology_svg" viewBox="0 0 1400 740"></svg>
         </div>
 
         <div class="info-panel">
@@ -487,37 +545,71 @@ def topology():
             const hostNodes = nodes.filter(n => n.type === 'host');
 
             const positions = {};
-            const centerY = 280;
+            const centerY = 360;
 
-            // Lay out switches across the center
+            // Space switches evenly
             switchNodes.forEach((n, i) => {
-                const x = 250 + i * (700 / Math.max(1, switchNodes.length - 1 || 1));
+                const total = Math.max(1, switchNodes.length);
+                const x = 250 + i * (900 / Math.max(1, total - 1 || 1));
                 positions[n.id] = { x, y: centerY };
             });
 
-            // Hosts above/below by trust status
-            let trustedIndex = 0;
-            let iotIndex = 0;
+            // Group hosts by parent switch + trust status
+            const trustedBySwitch = {};
+            const iotBySwitch = {};
 
-            hostNodes.forEach((n) => {
-                const parentX = positions['sw-' + n.dpid] ? positions['sw-' + n.dpid].x : 600;
-
+            hostNodes.forEach(n => {
+                const dpid = n.dpid || "unknown";
                 if (n.trusted) {
-                    positions[n.id] = {
-                        x: parentX - 80 + (trustedIndex % 3) * 80,
-                        y: 120 + Math.floor(trustedIndex / 3) * 70
-                    };
-                    trustedIndex++;
+                    if (!trustedBySwitch[dpid]) trustedBySwitch[dpid] = [];
+                    trustedBySwitch[dpid].push(n);
                 } else {
-                    positions[n.id] = {
-                        x: parentX - 80 + (iotIndex % 3) * 80,
-                        y: 430 + Math.floor(iotIndex / 3) * 70
-                    };
-                    iotIndex++;
+                    if (!iotBySwitch[dpid]) iotBySwitch[dpid] = [];
+                    iotBySwitch[dpid].push(n);
                 }
             });
 
-            // Draw edges
+            // Place trusted hosts above switches with wide spacing
+            Object.keys(trustedBySwitch).forEach(dpid => {
+                const arr = trustedBySwitch[dpid];
+                const parent = positions['sw-' + dpid] || { x: 700, y: centerY };
+                const spacing = 180;
+                const startX = parent.x - ((arr.length - 1) * spacing) / 2;
+
+                arr.forEach((node, idx) => {
+                    positions[node.id] = {
+                        x: startX + idx * spacing,
+                        y: 140
+                    };
+                });
+            });
+
+            // Place unknown/iot hosts below switches with much wider spacing
+            Object.keys(iotBySwitch).forEach(dpid => {
+                const arr = iotBySwitch[dpid];
+                const parent = positions['sw-' + dpid] || { x: 700, y: centerY };
+                const spacing = 220;
+                const startX = parent.x - ((arr.length - 1) * spacing) / 2;
+
+                arr.forEach((node, idx) => {
+                    positions[node.id] = {
+                        x: startX + idx * spacing,
+                        y: 590
+                    };
+                });
+            });
+
+            // Fallback for any orphan hosts
+            hostNodes.forEach((node, idx) => {
+                if (!positions[node.id]) {
+                    positions[node.id] = {
+                        x: 120 + idx * 180,
+                        y: node.trusted ? 140 : 590
+                    };
+                }
+            });
+
+            // Draw edges first
             edges.forEach(edge => {
                 if (!positions[edge.source] || !positions[edge.target]) return;
 
@@ -529,17 +621,18 @@ def topology():
                 line.setAttribute('y1', s.y);
                 line.setAttribute('x2', t.x);
                 line.setAttribute('y2', t.y);
-                line.setAttribute('stroke', edge.type === 'switch-link' ? '#777' : '#aaa');
+                line.setAttribute('stroke', edge.type === 'switch-link' ? '#666' : '#aaa');
                 line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '2');
                 svg.appendChild(line);
 
                 const tx = (s.x + t.x) / 2;
-                const ty = (s.y + t.y) / 2 - 6;
+                const ty = (s.y + t.y) / 2 - 8;
                 const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
                 label.setAttribute('x', tx);
                 label.setAttribute('y', ty);
                 label.setAttribute('text-anchor', 'middle');
                 label.setAttribute('font-size', '11');
+                label.setAttribute('fill', '#555');
                 label.textContent = edge.label || '';
                 svg.appendChild(label);
             });
@@ -551,56 +644,82 @@ def topology():
 
                 if (node.type === 'switch') {
                     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                    rect.setAttribute('x', p.x - 42);
-                    rect.setAttribute('y', p.y - 25);
-                    rect.setAttribute('width', 84);
-                    rect.setAttribute('height', 50);
-                    rect.setAttribute('rx', 8);
+                    rect.setAttribute('x', p.x - 58);
+                    rect.setAttribute('y', p.y - 30);
+                    rect.setAttribute('width', 116);
+                    rect.setAttribute('height', 60);
+                    rect.setAttribute('rx', 10);
                     rect.setAttribute('fill', node.color || '#3498db');
                     rect.setAttribute('stroke', '#1f4f73');
                     rect.setAttribute('stroke-width', '2');
                     rect.style.cursor = 'pointer';
                     rect.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(rect);
+
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', p.x);
+                    text.setAttribute('y', p.y + 5);
+                    text.setAttribute('text-anchor', 'middle');
+                    text.setAttribute('font-size', '13');
+                    text.setAttribute('font-weight', 'bold');
+                    text.setAttribute('fill', 'white');
+                    text.textContent = node.label;
+                    svg.appendChild(text);
                 } else {
                     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                     circle.setAttribute('cx', p.x);
                     circle.setAttribute('cy', p.y);
-                    circle.setAttribute('r', 24);
+                    circle.setAttribute('r', 28);
                     circle.setAttribute('fill', node.color || '#e74c3c');
                     circle.setAttribute('stroke', '#333');
                     circle.setAttribute('stroke-width', '2');
                     circle.style.cursor = 'pointer';
                     circle.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(circle);
-                }
 
-                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                text.setAttribute('x', p.x);
-                text.setAttribute('y', p.y + (node.type === 'switch' ? 5 : 40));
-                text.setAttribute('text-anchor', 'middle');
-                text.setAttribute('class', 'node-label');
-                text.textContent = node.label;
-                svg.appendChild(text);
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', p.x);
+                    text.setAttribute('y', p.y + 52);
+                    text.setAttribute('text-anchor', 'middle');
+                    text.setAttribute('font-size', '12');
+                    text.setAttribute('font-weight', 'bold');
+                    text.setAttribute('fill', '#222');
+                    text.textContent = node.label.length > 22 ? node.label.substring(0, 22) + '...' : node.label;
+                    svg.appendChild(text);
+
+                    const macText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    macText.setAttribute('x', p.x);
+                    macText.setAttribute('y', p.y + 68);
+                    macText.setAttribute('text-anchor', 'middle');
+                    macText.setAttribute('font-size', '10');
+                    macText.setAttribute('fill', '#555');
+                    macText.textContent = node.mac || '';
+                    svg.appendChild(macText);
+                }
             });
 
             function showNodeInfo(node) {
                 if (node.type === 'switch') {
                     info.innerHTML = `
                         <h3>Switch Details</h3>
-                        <p><b>Label:</b> ${node.label}</p>
+                        <p><b>Name:</b> ${node.label}</p>
                         <p><b>DPID:</b> ${node.dpid}</p>
                         <p><a href="/flows?dpid=${node.dpid}">View Flow Table</a></p>
                         <p><a href="/ports?dpid=${node.dpid}">View Port Stats</a></p>
                     `;
                 } else {
+                    const ipv4 = (node.ipv4 && node.ipv4.length) ? node.ipv4.join(', ') : 'None';
+                    const ipv6 = (node.ipv6 && node.ipv6.length) ? node.ipv6.join(', ') : 'None';
+
                     info.innerHTML = `
                         <h3>Host Details</h3>
-                        <p><b>Label:</b> ${node.label}</p>
+                        <p><b>Name:</b> ${node.label}</p>
                         <p><b>MAC:</b> ${node.mac}</p>
                         <p><b>Role:</b> ${node.role}</p>
                         <p><b>Owner:</b> ${node.owner}</p>
                         <p><b>Status:</b> ${node.status}</p>
+                        <p><b>IPv4:</b> ${ipv4}</p>
+                        <p><b>IPv6:</b> ${ipv6}</p>
                         <p><b>Attached Switch:</b> ${node.dpid}</p>
                         <p><b>Port:</b> ${node.port_no}</p>
 
@@ -658,7 +777,7 @@ def hosts():
             <td>{badge}</td>
             <td>{html.escape(info['status'])}</td>
             <td>{html.escape(info['owner'])}</td>
-            <td>{html.escape(str(dpid))}</td>
+            <td>{html.escape(friendly_switch_name(str(dpid)))}</td>
             <td>{html.escape(str(port_no))}</td>
         </tr>
         """
@@ -671,7 +790,7 @@ def hosts():
             <th>Classification</th>
             <th>Whitelist Status</th>
             <th>Owner</th>
-            <th>Switch DPID</th>
+            <th>Switch</th>
             <th>Port</th>
         </tr>
     """
@@ -687,13 +806,16 @@ def hosts():
 @app.route("/switches")
 def switches_page():
     sws = get_switches()
-    rows = "".join(f"<tr><td>{s}</td></tr>" for s in sws)
+    rows = "".join(
+        f"<tr><td>{html.escape(friendly_switch_name(str(s)))}</td><td>{html.escape(str(s))}</td></tr>"
+        for s in sws
+    )
     html_content = """
     <h2>Switches</h2>
     <table>
-        <tr><th>DPID</th></tr>
+        <tr><th>Name</th><th>DPID</th></tr>
     """
-    html_content += rows if rows else "<tr><td>No switches found.</td></tr>"
+    html_content += rows if rows else "<tr><td colspan='2'>No switches found.</td></tr>"
     html_content += "</table>"
     return page(html_content)
 
@@ -744,7 +866,7 @@ def flows():
         </tr>
         """
 
-    html_content = "<h2>Flow Table</h2>"
+    html_content = f"<h2>Flow Table - {html.escape(friendly_switch_name(str(dpid)))}</h2>"
     if msg == "deleted":
         html_content += "<div class='msg'>Flow deleted.</div>"
     elif msg == "quarantined":
@@ -789,7 +911,7 @@ def ports():
         </tr>
         """
 
-    html_content = "<h2>Port Stats</h2>"
+    html_content = f"<h2>Port Stats - {html.escape(friendly_switch_name(str(dpid)))}</h2>"
     html_content += render_switch_tabs(active=dpid, target="ports")
     html_content += """
     <table>

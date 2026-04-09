@@ -17,8 +17,8 @@ QUARANTINE_STATE_FILE = "quarantine_state.json"
 # Friendly switch names
 # -------------------------------------------------------------------
 SWITCH_LABELS = {
-    "00000000bada111": "Main Switch (10.10.10.x)",
-    "00000000bada222": "Quarantine Switch (10.10.20.x)"
+    "00000000bada111": "Switch_10.10.10",
+    "00000000bada222": "Switch_10.10.20"
 }
 
 # -------------------------------------------------------------------

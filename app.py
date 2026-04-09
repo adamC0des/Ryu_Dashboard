@@ -8,6 +8,33 @@ app = Flask(__name__)
 RYU = "http://127.0.0.1:8080"
 REFRESH_SECONDS = 10
 
+# ============================================================
+# MAC WHITELIST
+# Add your approved / known devices here.
+# Key = MAC address in lowercase
+# Value = metadata for labeling/classification
+# ============================================================
+MAC_WHITELIST = {
+    "00:00:00:00:00:01": {
+        "label": "Engineering Laptop",
+        "role": "Trusted / Non-IoT",
+        "owner": "Admin"
+    },
+    "00:00:00:00:00:02": {
+        "label": "Security Workstation",
+        "role": "Trusted / Non-IoT",
+        "owner": "SOC"
+    },
+    "b8:27:eb:12:34:56": {
+        "label": "Approved Raspberry Pi Sensor",
+        "role": "Approved IoT",
+        "owner": "Lab"
+    }
+}
+
+# If MAC is not in the whitelist, classify it as IoT/unregistered
+DEFAULT_UNKNOWN_ROLE = "IoT / Unregistered"
+
 BASE = f"""
 <html>
 <head>
@@ -50,7 +77,7 @@ body {{
     min-height: calc(100vh - 70px);
 }}
 .sidebar {{
-    width: 220px;
+    width: 240px;
     background: #d88e85;
     padding: 15px;
 }}
@@ -187,9 +214,36 @@ pre {{
     background: #f6e4cf;
     border: 1px solid #d2a56b;
 }}
+.node-host-whitelist {{
+    background: #dff3df;
+    border: 1px solid #73b173;
+}}
+.node-host-iot {{
+    background: #ffe2e2;
+    border: 1px solid #d27a7a;
+}}
 .link-row {{
     padding: 8px 0;
     border-bottom: 1px solid #eee;
+}}
+.badge {{
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+}}
+.badge-trusted {{
+    background: #dff3df;
+    color: #216921;
+}}
+.badge-iot {{
+    background: #ffe2e2;
+    color: #8a1f1f;
+}}
+.badge-approved-iot {{
+    background: #efe3ff;
+    color: #5b2a86;
 }}
 </style>
 </head>
@@ -204,6 +258,7 @@ pre {{
     <div class="sidebar">
         <a href="/">Home</a>
         <a href="/topology">Topology</a>
+        <a href="/hosts">Host Discovery</a>
         <a href="/flows">Flows</a>
         <a href="/ports">Ports</a>
         <a href="/flowcontrol">Flow Control</a>
@@ -252,6 +307,44 @@ def get_topology_hosts():
     data = get_json("/v1.0/topology/hosts", [])
     return data if isinstance(data, list) else []
 
+def normalize_mac(mac: str) -> str:
+    return (mac or "").strip().lower()
+
+def classify_host(mac: str):
+    mac_norm = normalize_mac(mac)
+    if mac_norm in MAC_WHITELIST:
+        info = MAC_WHITELIST[mac_norm]
+        role = info.get("role", "Trusted / Non-IoT")
+        label = info.get("label", "Whitelisted Device")
+        owner = info.get("owner", "Unknown")
+        if role == "Approved IoT":
+            badge_class = "badge-approved-iot"
+            node_class = "node-host-whitelist"
+        else:
+            badge_class = "badge-trusted"
+            node_class = "node-host-whitelist"
+        return {
+            "mac": mac_norm,
+            "label": label,
+            "role": role,
+            "owner": owner,
+            "status": "Whitelisted",
+            "badge_class": badge_class,
+            "node_class": node_class,
+            "trusted": True
+        }
+
+    return {
+        "mac": mac_norm,
+        "label": "Unknown Device",
+        "role": DEFAULT_UNKNOWN_ROLE,
+        "owner": "Unregistered",
+        "status": "Not Whitelisted",
+        "badge_class": "badge-iot",
+        "node_class": "node-host-iot",
+        "trusted": False
+    }
+
 def render_switch_tabs(active=None, target="flows"):
     sws = get_switches()
     if not sws:
@@ -271,20 +364,39 @@ def api_topology():
     topo_links = get_topology_links()
     topo_hosts = get_topology_hosts()
 
+    enriched_hosts = []
+    for host in topo_hosts:
+        host_mac = host.get("mac", "")
+        info = classify_host(host_mac)
+        enriched_hosts.append({
+            "mac": host_mac,
+            "classification": info
+        })
+
     result = {
         "stats_switches": stats_switches,
         "topology_switches": topo_switches,
         "topology_links": topo_links,
-        "topology_hosts": topo_hosts
+        "topology_hosts": topo_hosts,
+        "classified_hosts": enriched_hosts
     }
     return jsonify(result)
 
 @app.route("/")
 def home():
     sws = get_switches()
+    topo_hosts = get_topology_hosts()
+    classified = [classify_host(h.get("mac", "")) for h in topo_hosts]
+
+    trusted_count = sum(1 for h in classified if h["trusted"])
+    iot_count = sum(1 for h in classified if not h["trusted"])
+
     html_content = "<div class='card'><h2>Controller Overview</h2>"
     html_content += f"<p><b>Detected Switches:</b> {len(sws)}</p>"
-    html_content += "<p>Use the menu to inspect topology, flow tables, port stats, add/remove rules, or quarantine traffic.</p></div>"
+    html_content += f"<p><b>Detected Hosts:</b> {len(topo_hosts)}</p>"
+    html_content += f"<p><b>Whitelisted / Trusted Hosts:</b> {trusted_count}</p>"
+    html_content += f"<p><b>IoT / Unregistered Hosts:</b> {iot_count}</p>"
+    html_content += "<p>Use Host Discovery to classify devices by MAC address and identify unknown IoT endpoints.</p></div>"
     html_content += render_switch_tabs()
     return page(html_content)
 
@@ -293,9 +405,8 @@ def topology():
     html_content = """
     <h2>Live Topology</h2>
     <div class="note">
-        This page polls the controller for topology data in real time.
-        If Ryu exposes /v1.0/topology/*, you will see switches, links, and hosts.
-        Otherwise, it will fall back to live switch detection from /stats/switches.
+        This page polls the controller for topology data in real time. If Ryu exposes /v1.0/topology/*,
+        you will see switches, links, and hosts. Hosts are classified using the MAC whitelist.
     </div>
 
     <div class="topology-wrap">
@@ -331,7 +442,7 @@ def topology():
 
             if (data.topology_switches && data.topology_switches.length > 0) {
                 data.topology_switches.forEach(sw => {
-                    const dpid = sw.dp.id || sw.dpid || JSON.stringify(sw);
+                    const dpid = sw.dp ? sw.dp.id : (sw.dpid || JSON.stringify(sw));
                     switchHtml += `<div class="node node-switch">${dpid}</div>`;
                 });
             } else if (data.stats_switches && data.stats_switches.length > 0) {
@@ -354,10 +465,21 @@ def topology():
             }
 
             if (data.topology_hosts && data.topology_hosts.length > 0) {
-                data.topology_hosts.forEach(host => {
+                data.topology_hosts.forEach((host, idx) => {
                     const mac = host.mac || "unknown-mac";
                     const attach = host.port ? `${host.port.dpid}:${host.port.port_no}` : "unknown-port";
-                    hostHtml += `<div class="node node-host">${mac}<br><span class="small">${attach}</span></div>`;
+                    const cls = data.classified_hosts[idx] ? data.classified_hosts[idx].classification : null;
+                    const role = cls ? cls.role : "Unknown";
+                    const label = cls ? cls.label : "Unknown Device";
+                    const nodeClass = cls ? cls.node_class : "node-host";
+                    hostHtml += `
+                        <div class="node ${nodeClass}">
+                            ${label}<br>
+                            <span class="small">${mac}</span><br>
+                            <span class="small">${attach}</span><br>
+                            <span class="small">${role}</span>
+                        </div>
+                    `;
                 });
             } else {
                 hostHtml = "No hosts detected.";
@@ -378,6 +500,62 @@ def topology():
     setInterval(loadTopology, 3000);
     </script>
     """
+    return page(html_content)
+
+@app.route("/hosts")
+def hosts():
+    topo_hosts = get_topology_hosts()
+
+    html_content = "<h2>Host Discovery</h2>"
+    html_content += """
+    <div class='note'>
+        Hosts are identified by MAC address. If a MAC appears in the whitelist, it is labeled as approved.
+        If not, it is classified as IoT / Unregistered.
+    </div>
+    """
+
+    rows = ""
+    for host in topo_hosts:
+        host_mac = host.get("mac", "")
+        port = host.get("port", {})
+        info = classify_host(host_mac)
+
+        dpid = port.get("dpid", "unknown")
+        port_no = port.get("port_no", "unknown")
+
+        badge = f"<span class='badge {info['badge_class']}'>{html.escape(info['role'])}</span>"
+
+        rows += f"""
+        <tr>
+            <td>{html.escape(host_mac)}</td>
+            <td>{html.escape(info['label'])}</td>
+            <td>{badge}</td>
+            <td>{html.escape(info['status'])}</td>
+            <td>{html.escape(info['owner'])}</td>
+            <td>{html.escape(str(dpid))}</td>
+            <td>{html.escape(str(port_no))}</td>
+        </tr>
+        """
+
+    html_content += """
+    <table>
+        <tr>
+            <th>MAC Address</th>
+            <th>Label</th>
+            <th>Classification</th>
+            <th>Whitelist Status</th>
+            <th>Owner</th>
+            <th>Switch DPID</th>
+            <th>Port</th>
+        </tr>
+    """
+    html_content += rows if rows else "<tr><td colspan='7'>No hosts detected.</td></tr>"
+    html_content += "</table>"
+
+    html_content += "<div class='card'><h3>Current MAC Whitelist</h3><pre>"
+    html_content += html.escape(json.dumps(MAC_WHITELIST, indent=2))
+    html_content += "</pre></div>"
+
     return page(html_content)
 
 @app.route("/switches")
@@ -574,7 +752,7 @@ def quarantine():
     html_content += """
     <div class='note'>
         Quarantine installs a higher-priority rule that redirects matching traffic to the quarantine port.
-        Set the port to the interface connected to your quarantine environment.
+        Unknown / unregistered MAC devices discovered in Host Discovery are strong quarantine candidates.
     </div>
     """
     if msg:

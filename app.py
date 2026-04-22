@@ -447,16 +447,16 @@ def classify_host(mac):
 
     role = info.get("role", "IoT / Unregistered")
 
-    if role == "Virtual Machine":
+    if role in ("Virtual Machine", "Approved VM"):
         return {
             "mac": mac_norm,
             "label": info.get("label", "Virtual Machine"),
-            "role": role,
+            "role": "Virtual Machine",
             "owner": info.get("owner", "Lab"),
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-vm",
             "trusted": True,
-            "color": "#1565C0",        # deep blue
+            "color": "#1565C0",
             "stroke": "#0D3A6E",
             "currently_seen": info.get("currently_seen", False)
         }
@@ -700,11 +700,14 @@ def topology():
             // ── position switches evenly across canvas ────────────────
             const positions = {};
             const SW_COUNT  = Math.max(1, switchNodes.length);
-            const SW_STEP   = SW_COUNT === 1 ? 0 : 900;
-            const SW_START  = SW_COUNT === 1 ? 1000 : 550;
+            const CANVAS_W  = 2000;
+            const SW_MARGIN = 200;  // padding from canvas edges
+            const SW_STEP   = SW_COUNT === 1 ? 0
+                                : (CANVAS_W - SW_MARGIN * 2) / (SW_COUNT - 1);
+            const SW_START  = SW_COUNT === 1 ? CANVAS_W / 2 : SW_MARGIN;
 
             switchNodes.forEach((n, i) => {
-                positions[n.id] = { x: SW_START + i * SW_STEP, y: SW_Y };
+                positions[n.id] = { x: Math.round(SW_START + i * SW_STEP), y: SW_Y };
             });
 
             // ── bucket hosts by parent switch + zone (top vs bottom) ──
@@ -927,7 +930,11 @@ def topology():
                             actionHtml += `
                             <form method="post" action="/approvehost" style="margin-top:8px;">
                                 <input type="hidden" name="mac" value="${node.mac}">
-                                <button class="approve-btn" type="submit">&#x2714; Approve as IoT</button>
+                                <button class="approve-btn" type="submit">&#x1F4E1; Approve as IoT</button>
+                            </form>
+                            <form method="post" action="/approvevm" style="margin-top:8px;">
+                                <input type="hidden" name="mac" value="${node.mac}">
+                                <button style="background:#5b2d8e;color:white;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;" type="submit">&#x1F5A5; Approve as VM</button>
                             </form>`;
                         }
                     }
@@ -993,7 +1000,11 @@ def hosts():
             </form>
             <form class="inline-form" method="post" action="/approvehost">
                 <input type="hidden" name="mac" value="{mac}">
-                <button type="submit" class="small-btn approve-btn">Approve</button>
+                <button type="submit" class="small-btn approve-btn">Approve IoT</button>
+            </form>
+            <form class="inline-form" method="post" action="/approvevm">
+                <input type="hidden" name="mac" value="{mac}">
+                <button type="submit" class="small-btn" style="background:#5b2d8e;">Approve VM</button>
             </form>"""
         else:
             control_html = f"""
@@ -1186,6 +1197,23 @@ def approvehost():
         return redirect(url_for("hosts"))
     except Exception as e:
         return page(f"<div class='err'>Approve failed: {html.escape(str(e))}</div>")
+
+
+@app.route("/approvevm", methods=["POST"])
+def approvevm():
+    try:
+        mac = normalize_mac(request.form["mac"])
+        label = request.form.get("label", "").strip() or None
+        registry = load_registry()
+        if mac in registry:
+            registry[mac]["role"] = "Virtual Machine"
+            registry[mac]["status"] = "Whitelisted"
+            if label:
+                registry[mac]["label"] = label
+            save_registry(registry)
+        return redirect(url_for("hosts"))
+    except Exception as e:
+        return page(f"<div class='err'>Approve as VM failed: {html.escape(str(e))}</div>")
 
 
 @app.route("/deleteflow", methods=["POST"])

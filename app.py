@@ -554,8 +554,14 @@ def api_topology():
                     "type": "switch-link"
                 })
 
+    # Track which MACs Ryu reported live
+    live_macs = set()
+
     for host in topo_hosts:
         mac = normalize_mac(host.get("mac", ""))
+        if not mac:
+            continue
+        live_macs.add(mac)
         info = classify_host(mac)
         port = host.get("port", {})
         real_dpid = str(port.get("dpid", "unknown"))
@@ -589,13 +595,67 @@ def api_topology():
             "color": info["color"],
             "stroke": info.get("stroke", "#333"),
             "trusted": info["trusted"],
-            "quarantined": quarantined
+            "quarantined": quarantined,
+            "offline": False
         })
         edges.append({
             "source": f"host-{mac}",
             "target": f"sw-{display_dpid}",
             "label": f"port {display_port}",
             "type": "host-link"
+        })
+
+    # Also show whitelisted/approved registry devices Ryu isn't currently seeing
+    registry = load_registry()
+    known_switch_ids = set(str(s) for s in stats_switches)
+
+    for mac, entry in registry.items():
+        if mac in live_macs:
+            continue  # already rendered above
+        role = entry.get("role", "")
+        status = entry.get("status", "")
+        # Only show devices that have been explicitly trusted/approved
+        if status not in ("Whitelisted",) and role not in ("Virtual Machine", "Approved IoT", "Trusted / Non-IoT", "Approved VM"):
+            continue
+        info = classify_host(mac)
+        dpid = str(entry.get("dpid", "unknown"))
+        port_no = str(entry.get("port_no", "unknown"))
+
+        # Only attach to a switch we actually know about; skip if dpid unknown
+        if dpid == "unknown" or (known_switch_ids and dpid not in known_switch_ids):
+            # Still show the node but attach to first known switch as best-guess
+            if known_switch_ids:
+                dpid = next(iter(known_switch_ids))
+            else:
+                continue
+
+        quarantined = quarantine_state.get(mac, {}).get("quarantined", False)
+
+        nodes.append({
+            "id": f"host-{mac}",
+            "label": info["label"],
+            "type": "host",
+            "mac": mac,
+            "role": info["role"],
+            "owner": info["owner"],
+            "status": info["status"],
+            "dpid": dpid,
+            "real_dpid": dpid,
+            "port_no": port_no,
+            "real_port_no": port_no,
+            "ipv4": entry.get("ipv4", []),
+            "ipv6": entry.get("ipv6", []),
+            "color": info["color"],
+            "stroke": info.get("stroke", "#333"),
+            "trusted": info["trusted"],
+            "quarantined": quarantined,
+            "offline": True   # flag so JS can dim the node
+        })
+        edges.append({
+            "source": f"host-{mac}",
+            "target": f"sw-{dpid}",
+            "label": f"port {port_no} (last known)",
+            "type": "host-link-offline"
         })
 
     return jsonify({"nodes": nodes, "edges": edges})
@@ -758,12 +818,14 @@ def topology():
                 const t = positions[edge.target];
                 if (!s || !t) return;
 
+                const isOffline = edge.type === 'host-link-offline';
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
                 line.setAttribute('x1', s.x); line.setAttribute('y1', s.y);
                 line.setAttribute('x2', t.x); line.setAttribute('y2', t.y);
-                line.setAttribute('stroke', edge.type === 'switch-link' ? '#444' : '#999');
+                line.setAttribute('stroke', edge.type === 'switch-link' ? '#444' : (isOffline ? '#bbb' : '#999'));
                 line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '1.5');
-                line.setAttribute('stroke-dasharray', edge.type === 'switch-link' ? 'none' : '5,3');
+                line.setAttribute('stroke-dasharray', edge.type === 'switch-link' ? 'none' : (isOffline ? '8,5' : '5,3'));
+                line.setAttribute('opacity', isOffline ? '0.45' : '1');
                 svg.appendChild(line);
 
                 // port label on edge midpoint
@@ -772,7 +834,7 @@ def topology():
                 lbl.setAttribute('y', (s.y + t.y) / 2 - 6);
                 lbl.setAttribute('text-anchor', 'middle');
                 lbl.setAttribute('font-size', '10');
-                lbl.setAttribute('fill', '#666');
+                lbl.setAttribute('fill', isOffline ? '#aaa' : '#666');
                 lbl.setAttribute('font-family', 'monospace');
                 lbl.textContent = edge.label || '';
                 svg.appendChild(lbl);
@@ -824,6 +886,8 @@ def topology():
                 } else {
                     // ── host: circle + label block below ─────────────
                     const isQ = node.quarantined;
+                    const isOffline = node.offline === true;
+                    const nodeOpacity = isOffline ? '0.45' : '1';
 
                     // outer glow ring for quarantined
                     if (isQ) {
@@ -843,9 +907,11 @@ def topology():
                     circle.setAttribute('r', NODE_R);
                     circle.setAttribute('fill', node.color || '#C62828');
                     circle.setAttribute('stroke', node.stroke || '#333');
-                    circle.setAttribute('stroke-width', '2.5');
+                    circle.setAttribute('stroke-width', isOffline ? '1.5' : '2.5');
+                    circle.setAttribute('stroke-dasharray', isOffline ? '5,3' : 'none');
+                    circle.setAttribute('opacity', nodeOpacity);
                     circle.style.cursor = 'pointer';
-                    circle.style.filter = 'drop-shadow(0 2px 5px rgba(0,0,0,0.25))';
+                    circle.style.filter = isOffline ? 'none' : 'drop-shadow(0 2px 5px rgba(0,0,0,0.25))';
                     circle.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(circle);
 
@@ -858,6 +924,7 @@ def topology():
                     icon.setAttribute('text-anchor', 'middle');
                     icon.setAttribute('font-size', '18');
                     icon.setAttribute('fill', 'white');
+                    icon.setAttribute('opacity', nodeOpacity);
                     icon.style.pointerEvents = 'none';
                     icon.textContent = roleIcon;
                     svg.appendChild(icon);
@@ -871,18 +938,31 @@ def topology():
                     nameLbl.setAttribute('text-anchor', 'middle');
                     nameLbl.setAttribute('font-size', '11');
                     nameLbl.setAttribute('font-weight', 'bold');
-                    nameLbl.setAttribute('fill', '#111');
+                    nameLbl.setAttribute('fill', isOffline ? '#888' : '#111');
                     nameLbl.setAttribute('font-family', 'Arial, sans-serif');
                     nameLbl.style.pointerEvents = 'none';
                     nameLbl.textContent = shortLabel;
                     svg.appendChild(nameLbl);
 
+                    // offline badge
+                    if (isOffline) {
+                        const offBadge = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        offBadge.setAttribute('x', p.x); offBadge.setAttribute('y', p.y + NODE_R + 30);
+                        offBadge.setAttribute('text-anchor', 'middle');
+                        offBadge.setAttribute('font-size', '9');
+                        offBadge.setAttribute('fill', '#999');
+                        offBadge.setAttribute('font-style', 'italic');
+                        offBadge.style.pointerEvents = 'none';
+                        offBadge.textContent = '(offline / last known)';
+                        svg.appendChild(offBadge);
+                    }
+
                     // mac address label
                     const macLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    macLbl.setAttribute('x', p.x); macLbl.setAttribute('y', p.y + NODE_R + 32);
+                    macLbl.setAttribute('x', p.x); macLbl.setAttribute('y', p.y + NODE_R + (isOffline ? 42 : 32));
                     macLbl.setAttribute('text-anchor', 'middle');
                     macLbl.setAttribute('font-size', '9');
-                    macLbl.setAttribute('fill', '#555');
+                    macLbl.setAttribute('fill', isOffline ? '#aaa' : '#555');
                     macLbl.setAttribute('font-family', 'monospace');
                     macLbl.style.pointerEvents = 'none';
                     macLbl.textContent = node.mac || '';
@@ -928,13 +1008,23 @@ def topology():
                             </form>`;
                         if (node.role === 'IoT / Unregistered') {
                             actionHtml += `
-                            <form method="post" action="/approvehost" style="margin-top:8px;">
+                            <hr style="margin:10px 0;">
+                            <label style="font-size:12px;font-weight:bold;">Device Name (optional)</label>
+                            <input id="approve_name_${node.mac.replace(/:/g,'')}" type="text"
+                                   placeholder="${node.label}"
+                                   style="width:100%;padding:6px;margin:4px 0 8px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;">
+                            <form method="post" action="/approvehost" style="margin-top:4px;">
                                 <input type="hidden" name="mac" value="${node.mac}">
-                                <button class="approve-btn" type="submit">&#x1F4E1; Approve as IoT</button>
+                                <input type="hidden" name="label_field" id="iot_label_${node.mac.replace(/:/g,'')}">
+                                <button class="approve-btn" type="submit"
+                                    onclick="document.getElementById('iot_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value"
+                                    style="width:100%;">&#x1F4E1; Approve as IoT</button>
                             </form>
-                            <form method="post" action="/approvevm" style="margin-top:8px;">
+                            <form method="post" action="/approvevm" style="margin-top:6px;">
                                 <input type="hidden" name="mac" value="${node.mac}">
-                                <button style="background:#5b2d8e;color:white;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;" type="submit">&#x1F5A5; Approve as VM</button>
+                                <input type="hidden" name="label_field" id="vm_label_${node.mac.replace(/:/g,'')}">
+                                <button style="background:#5b2d8e;color:white;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;" type="submit"
+                                    onclick="document.getElementById('vm_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value">&#x1F5A5; Approve as VM</button>
                             </form>`;
                         }
                     }
@@ -991,6 +1081,8 @@ def hosts():
                 <button type="submit" class="small-btn unquarantine-btn">Unquarantine</button>
             </form>"""
         elif info["role"] == "IoT / Unregistered":
+            safe_mac = mac.replace(":", "")
+            current_label = html.escape(entry.get('label', ''))
             control_html = f"""
             <form class="inline-form" method="post" action="/quarantineflow">
                 <input type="hidden" name="dpid" value="{dpid}">
@@ -998,14 +1090,22 @@ def hosts():
                 <input type="hidden" name="match" value='{html.escape(json.dumps({"eth_src": mac}))}'>
                 <button type="submit" class="small-btn quarantine-btn">Quarantine</button>
             </form>
-            <form class="inline-form" method="post" action="/approvehost">
-                <input type="hidden" name="mac" value="{mac}">
-                <button type="submit" class="small-btn approve-btn">Approve IoT</button>
-            </form>
-            <form class="inline-form" method="post" action="/approvevm">
-                <input type="hidden" name="mac" value="{mac}">
-                <button type="submit" class="small-btn" style="background:#5b2d8e;">Approve VM</button>
-            </form>"""
+            <div style="margin-top:6px;">
+                <input id="name_{safe_mac}" type="text" placeholder="{current_label}"
+                       style="width:140px;padding:4px 6px;font-size:12px;border:1px solid #ccc;border-radius:4px;margin-bottom:4px;">
+                <form class="inline-form" method="post" action="/approvehost">
+                    <input type="hidden" name="mac" value="{mac}">
+                    <input type="hidden" name="label_field" id="iot_lbl_{safe_mac}">
+                    <button type="submit" class="small-btn approve-btn"
+                        onclick="document.getElementById('iot_lbl_{safe_mac}').value=document.getElementById('name_{safe_mac}').value">Approve IoT</button>
+                </form>
+                <form class="inline-form" method="post" action="/approvevm">
+                    <input type="hidden" name="mac" value="{mac}">
+                    <input type="hidden" name="label_field" id="vm_lbl_{safe_mac}">
+                    <button type="submit" class="small-btn" style="background:#5b2d8e;color:white;border:none;padding:6px 10px;border-radius:4px;cursor:pointer;font-size:12px;"
+                        onclick="document.getElementById('vm_lbl_{safe_mac}').value=document.getElementById('name_{safe_mac}').value">Approve VM</button>
+                </form>
+            </div>"""
         else:
             control_html = f"""
             <form class="inline-form" method="post" action="/quarantineflow">
@@ -1189,10 +1289,13 @@ def quarantine():
 def approvehost():
     try:
         mac = normalize_mac(request.form["mac"])
+        label = request.form.get("label_field", "").strip() or None
         registry = load_registry()
         if mac in registry:
             registry[mac]["role"] = "Approved IoT"
             registry[mac]["status"] = "Whitelisted"
+            if label:
+                registry[mac]["label"] = label
             save_registry(registry)
         return redirect(url_for("hosts"))
     except Exception as e:
@@ -1203,7 +1306,7 @@ def approvehost():
 def approvevm():
     try:
         mac = normalize_mac(request.form["mac"])
-        label = request.form.get("label", "").strip() or None
+        label = request.form.get("label_field", "").strip() or None
         registry = load_registry()
         if mac in registry:
             registry[mac]["role"] = "Virtual Machine"

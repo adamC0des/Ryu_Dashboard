@@ -13,60 +13,34 @@ REFRESH_SECONDS = 5
 DEVICE_REGISTRY_FILE = "device_registry.json"
 QUARANTINE_STATE_FILE = "quarantine_state.json"
 
-# -------------------------------------------------------------------
-# Friendly switch names
-# -------------------------------------------------------------------
 SWITCH_LABELS = {
     "00000000bada111": "Switch_10.10.10",
     "00000000bada222": "Switch_10.10.20"
 }
 
-# -------------------------------------------------------------------
-# Quarantine output port per switch
-# -------------------------------------------------------------------
 QUARANTINE_PORTS = {
     "00000000bada111": 2,
     "00000000bada222": 2
 }
 
-# -------------------------------------------------------------------
-# Known devices
-# -------------------------------------------------------------------
 MAC_WHITELIST = {
-    # --- Ryu Controller (RYU_10.10.0.3) ---
     "00:0c:29:41:b5:e3": {"label": "RYU_10.10.0.3", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:41:b5:ed": {"label": "RYU_10.10.0.3", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- RYU_10.10.0.4 ---
     "00:0c:29:68:33:c1": {"label": "RYU_10.10.0.4", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:68:33:cb": {"label": "RYU_10.10.0.4", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- OFSW_Remote ---
     "00:0c:29:bc:8d:5d": {"label": "OFSW_Remote", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:bc:8d:67": {"label": "OFSW_Remote", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:bc:8d:71": {"label": "OFSW_Remote", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- Virtual_Router ---
     "00:0c:29:5c:1c:37": {"label": "Virtual_Router", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:5c:1c:41": {"label": "Virtual_Router", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:5c:1c:4b": {"label": "Virtual_Router", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- Splunk_VM ---
     "00:0c:29:92:db:a4": {"label": "Splunk_VM", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- Ai_IDS ---
     "00:0c:29:f1:4a:c3": {"label": "Ai_IDS", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:f1:4a:cd": {"label": "Ai_IDS", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- xHosts ---
     "00:50:56:bc:2c:9a": {"label": "xHost_20.x1", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:7c:18:84": {"label": "xHost_20.x2", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- DNSCAT2 ---
     "00:0c:29:0c:fc:b4": {"label": "DNSCAT2_server", "role": "Virtual Machine", "owner": "Lab"},
     "00:0c:29:3d:74:e7": {"label": "DNSCAT2_client", "role": "Virtual Machine", "owner": "Lab"},
-
-    # --- Test IoT Device ---
     "00:0c:29:16:37:b5": {"label": "Test_IoT_Device", "role": "Approved IoT", "owner": "Lab"},
 }
 
@@ -125,6 +99,7 @@ body {{
     flex: 1;
     padding: 20px;
     background: white;
+    overflow-x: auto;
 }}
 .switch-tab {{
     background: #d88e85;
@@ -165,8 +140,8 @@ button {{
     margin-right: 6px;
 }}
 button.delete-btn {{ background: #b33a3a; }}
-button.quarantine-btn {{ background: #7a3eb1; }}
-button.unquarantine-btn {{ background: #2e8b57; }}
+button.quarantine-btn {{ background: #cc3300; }}
+button.unquarantine-btn {{ background: #007a45; }}
 button.approve-btn {{ background: #1a6fbf; }}
 button.small-btn {{ padding: 6px 10px; font-size: 12px; }}
 input, textarea {{
@@ -217,22 +192,23 @@ pre {{
     font-size: 12px;
     font-weight: bold;
 }}
-.badge-trusted      {{ background: #dff3df; color: #216921; }}
-.badge-iot          {{ background: #ffe2e2; color: #8a1f1f; }}
-.badge-approved-iot {{ background: #efe3ff; color: #5b2a86; }}
-.badge-quarantined  {{ background: #fce5ff; color: #6b1b78; }}
-.badge-vm           {{ background: #ddeeff; color: #1a4a7a; }}
+.badge-trusted      {{ background: #d4f5d4; color: #1a5c1a; }}
+.badge-iot          {{ background: #ffd6cc; color: #8a1f00; }}
+.badge-approved-iot {{ background: #d6eaff; color: #003d80; }}
+.badge-quarantined  {{ background: #ffe0b2; color: #7a3300; }}
+.badge-vm           {{ background: #e0f0ff; color: #0a3060; }}
 .graph-wrap {{
     display: flex;
     gap: 20px;
     flex-wrap: wrap;
 }}
-.graph-panel {{ flex: 2; min-width: 860px; }}
+.graph-panel {{ flex: 2; min-width: 900px; overflow-x: auto; }}
 .info-panel  {{ flex: 1; min-width: 320px; }}
 svg {{
     width: 100%;
-    height: 760px;
-    background: #fbfbfb;
+    min-width: 1200px;
+    height: 900px;
+    background: #f8f9fb;
     border: 1px solid #ddd;
     border-radius: 8px;
 }}
@@ -244,7 +220,7 @@ svg {{
 }}
 .legend {{
     display: flex;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
     margin-bottom: 15px;
 }}
@@ -255,12 +231,15 @@ svg {{
     background: #fafafa;
     border: 1px solid #ddd;
     border-radius: 6px;
-    padding: 8px 12px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: bold;
 }}
 .legend-color {{
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
+    border: 2px solid rgba(0,0,0,0.18);
 }}
 </style>
 </head>
@@ -268,7 +247,7 @@ svg {{
 <div class="header">
     <div>SDN Dashboard</div>
     <div>
-        <a class="header-btn" href="javascript:window.location.reload()">⟳ Refresh</a>
+        <a class="header-btn" href="javascript:window.location.reload()">&#x27F3; Refresh</a>
     </div>
 </div>
 <div class="container">
@@ -461,7 +440,8 @@ def classify_host(mac):
             "status": "Quarantined",
             "badge_class": "badge-quarantined",
             "trusted": False,
-            "color": "#7a3eb1",
+            "color": "#FF6600",        # bright orange — unmistakable
+            "stroke": "#993300",
             "currently_seen": info.get("currently_seen", False)
         }
 
@@ -476,7 +456,8 @@ def classify_host(mac):
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-vm",
             "trusted": True,
-            "color": "#2980b9",
+            "color": "#1565C0",        # deep blue
+            "stroke": "#0D3A6E",
             "currently_seen": info.get("currently_seen", False)
         }
     elif role == "Approved IoT":
@@ -488,7 +469,8 @@ def classify_host(mac):
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-approved-iot",
             "trusted": True,
-            "color": "#9b59b6",
+            "color": "#00897B",        # teal/green
+            "stroke": "#004D40",
             "currently_seen": info.get("currently_seen", False)
         }
     elif role == "Trusted / Non-IoT":
@@ -500,7 +482,8 @@ def classify_host(mac):
             "status": info.get("status", "Whitelisted"),
             "badge_class": "badge-trusted",
             "trusted": True,
-            "color": "#2ecc71",
+            "color": "#2E7D32",        # forest green
+            "stroke": "#1B5E20",
             "currently_seen": info.get("currently_seen", False)
         }
     else:
@@ -512,7 +495,8 @@ def classify_host(mac):
             "status": info.get("status", "Not Whitelisted"),
             "badge_class": "badge-iot",
             "trusted": False,
-            "color": "#e74c3c",
+            "color": "#C62828",        # deep crimson red
+            "stroke": "#7B0000",
             "currently_seen": info.get("currently_seen", False)
         }
 
@@ -546,12 +530,12 @@ def api_topology():
         for sw in topo_switches:
             dpid = str(sw.get("dp", {}).get("id") or sw.get("dpid") or "unknown")
             nodes.append({"id": f"sw-{dpid}", "label": friendly_switch_name(dpid),
-                          "type": "switch", "dpid": dpid, "color": "#3498db"})
+                          "type": "switch", "dpid": dpid, "color": "#0277BD", "stroke": "#01579B"})
     else:
         for sw in stats_switches:
             dpid = str(sw)
             nodes.append({"id": f"sw-{dpid}", "label": friendly_switch_name(dpid),
-                          "type": "switch", "dpid": dpid, "color": "#3498db"})
+                          "type": "switch", "dpid": dpid, "color": "#0277BD", "stroke": "#01579B"})
 
     seen_links = set()
     for link in topo_links:
@@ -603,6 +587,7 @@ def api_topology():
             "ipv4": host.get("ipv4", []),
             "ipv6": host.get("ipv6", []),
             "color": info["color"],
+            "stroke": info.get("stroke", "#333"),
             "trusted": info["trusted"],
             "quarantined": quarantined
         })
@@ -662,17 +647,17 @@ def topology():
     </div>
 
     <div class="legend">
-        <div class="legend-item"><div class="legend-color" style="background:#3498db;"></div> Switch</div>
-        <div class="legend-item"><div class="legend-color" style="background:#2980b9;"></div> Virtual Machine</div>
-        <div class="legend-item"><div class="legend-color" style="background:#2ecc71;"></div> Trusted / Non-IoT</div>
-        <div class="legend-item"><div class="legend-color" style="background:#9b59b6;"></div> Approved IoT</div>
-        <div class="legend-item"><div class="legend-color" style="background:#7a3eb1;"></div> Quarantined</div>
-        <div class="legend-item"><div class="legend-color" style="background:#e74c3c;"></div> Unknown / Unregistered</div>
+        <div class="legend-item"><div class="legend-color" style="background:#0277BD;"></div> Switch</div>
+        <div class="legend-item"><div class="legend-color" style="background:#1565C0;"></div> Virtual Machine</div>
+        <div class="legend-item"><div class="legend-color" style="background:#2E7D32;"></div> Trusted / Non-IoT</div>
+        <div class="legend-item"><div class="legend-color" style="background:#00897B;"></div> Approved IoT</div>
+        <div class="legend-item"><div class="legend-color" style="background:#FF6600;"></div> Quarantined</div>
+        <div class="legend-item"><div class="legend-color" style="background:#C62828;"></div> Unknown / Unregistered</div>
     </div>
 
     <div class="graph-wrap">
         <div class="graph-panel">
-            <svg id="topology_svg" viewBox="0 0 1600 760"></svg>
+            <svg id="topology_svg" viewBox="0 0 2000 900" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <div class="info-panel">
             <div class="info-box" id="node_info">
@@ -683,169 +668,266 @@ def topology():
     </div>
 
     <script>
+    // ── colour + shape constants ──────────────────────────────────────
+    const NODE_R      = 32;   // host circle radius
+    const SW_W        = 150;  // switch rect width
+    const SW_H        = 56;   // switch rect height
+    const TOP_Y       = 120;  // trusted/quarantined host row Y
+    const SW_Y        = 450;  // switch row Y
+    const BOT_Y_START = 620;  // first bottom host row Y
+    const ROW_GAP     = 110;  // vertical gap between bottom rows
+    const H_SPACING   = 200;  // horizontal spacing between hosts
+    const COLS_PER_ROW = 7;   // max hosts per bottom row before wrapping
+
     async function loadTopology() {
         try {
-            const res = await fetch('/api/topology');
+            const res  = await fetch('/api/topology');
             const data = await res.json();
-            const svg = document.getElementById('topology_svg');
+            const svg  = document.getElementById('topology_svg');
             const info = document.getElementById('node_info');
             svg.innerHTML = '';
 
-            const nodes = data.nodes || [];
-            const edges = data.edges || [];
+            const nodes       = data.nodes || [];
+            const edges       = data.edges || [];
             const switchNodes = nodes.filter(n => n.type === 'switch');
-            const hostNodes = nodes.filter(n => n.type === 'host');
+            const hostNodes   = nodes.filter(n => n.type === 'host');
 
             if (nodes.length === 0) {
-                svg.innerHTML = '<text x="40" y="40">No topology data available.</text>';
+                svg.innerHTML = '<text x="40" y="40" font-size="16">No topology data available.</text>';
                 return;
             }
 
+            // ── position switches evenly across canvas ────────────────
             const positions = {};
-            const centerY = 360;
+            const SW_COUNT  = Math.max(1, switchNodes.length);
+            const SW_STEP   = SW_COUNT === 1 ? 0 : 900;
+            const SW_START  = SW_COUNT === 1 ? 1000 : 550;
 
             switchNodes.forEach((n, i) => {
-                const total = Math.max(1, switchNodes.length);
-                const spacing = total === 1 ? 0 : 700;
-                const startX = total === 1 ? 800 : 450;
-                positions[n.id] = { x: startX + i * spacing, y: centerY };
+                positions[n.id] = { x: SW_START + i * SW_STEP, y: SW_Y };
             });
 
+            // ── bucket hosts by parent switch + zone (top vs bottom) ──
             const topBySwitch = {};
-            const bottomBySwitch = {};
+            const botBySwitch = {};
+
             hostNodes.forEach(n => {
                 const dpid = n.dpid || "unknown";
-                if (n.trusted || n.quarantined) {
-                    if (!topBySwitch[dpid]) topBySwitch[dpid] = [];
-                    topBySwitch[dpid].push(n);
-                } else {
-                    if (!bottomBySwitch[dpid]) bottomBySwitch[dpid] = [];
-                    bottomBySwitch[dpid].push(n);
-                }
+                const bucket = (n.trusted || n.quarantined) ? topBySwitch : botBySwitch;
+                if (!bucket[dpid]) bucket[dpid] = [];
+                bucket[dpid].push(n);
             });
 
+            // ── place top hosts (trusted / quarantined) ───────────────
             Object.keys(topBySwitch).forEach(dpid => {
-                const arr = topBySwitch[dpid];
-                const parent = positions['sw-' + dpid] || { x: 800, y: centerY };
-                const startX = parent.x - ((arr.length - 1) * 240) / 2;
+                const arr    = topBySwitch[dpid];
+                const parent = positions['sw-' + dpid] || { x: 1000, y: SW_Y };
+                const total  = arr.length;
+                const startX = parent.x - ((total - 1) * H_SPACING) / 2;
                 arr.forEach((node, idx) => {
-                    positions[node.id] = { x: startX + idx * 240, y: 140 };
+                    positions[node.id] = { x: startX + idx * H_SPACING, y: TOP_Y };
                 });
             });
 
-            Object.keys(bottomBySwitch).forEach(dpid => {
-                const arr = bottomBySwitch[dpid];
-                const parent = positions['sw-' + dpid] || { x: 800, y: centerY };
-                const startX = parent.x - ((arr.length - 1) * 260) / 2;
+            // ── place bottom hosts (unknown/IoT) with row-wrapping ────
+            Object.keys(botBySwitch).forEach(dpid => {
+                const arr    = botBySwitch[dpid];
+                const parent = positions['sw-' + dpid] || { x: 1000, y: SW_Y };
+                const total  = arr.length;
+                const cols   = Math.min(total, COLS_PER_ROW);
+                const rows   = Math.ceil(total / COLS_PER_ROW);
+
                 arr.forEach((node, idx) => {
-                    positions[node.id] = { x: startX + idx * 260, y: 610 };
+                    const row    = Math.floor(idx / COLS_PER_ROW);
+                    const col    = idx % COLS_PER_ROW;
+                    const rowLen = (row === rows - 1) ? (total - row * COLS_PER_ROW) : COLS_PER_ROW;
+                    const rowStartX = parent.x - ((rowLen - 1) * H_SPACING) / 2;
+                    positions[node.id] = {
+                        x: rowStartX + col * H_SPACING,
+                        y: BOT_Y_START + row * ROW_GAP
+                    };
                 });
             });
 
+            // ── draw edges ────────────────────────────────────────────
             edges.forEach(edge => {
-                if (!positions[edge.source] || !positions[edge.target]) return;
                 const s = positions[edge.source];
                 const t = positions[edge.target];
+                if (!s || !t) return;
+
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
                 line.setAttribute('x1', s.x); line.setAttribute('y1', s.y);
                 line.setAttribute('x2', t.x); line.setAttribute('y2', t.y);
-                line.setAttribute('stroke', edge.type === 'switch-link' ? '#666' : '#aaa');
-                line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '2');
+                line.setAttribute('stroke', edge.type === 'switch-link' ? '#444' : '#999');
+                line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '1.5');
+                line.setAttribute('stroke-dasharray', edge.type === 'switch-link' ? 'none' : '5,3');
                 svg.appendChild(line);
 
+                // port label on edge midpoint
                 const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                lbl.setAttribute('x', (s.x + t.x) / 2);
-                lbl.setAttribute('y', (s.y + t.y) / 2 - 8);
+                lbl.setAttribute('x', (s.x + t.x) / 2 + 6);
+                lbl.setAttribute('y', (s.y + t.y) / 2 - 6);
                 lbl.setAttribute('text-anchor', 'middle');
-                lbl.setAttribute('font-size', '11');
-                lbl.setAttribute('fill', '#555');
+                lbl.setAttribute('font-size', '10');
+                lbl.setAttribute('fill', '#666');
+                lbl.setAttribute('font-family', 'monospace');
                 lbl.textContent = edge.label || '';
                 svg.appendChild(lbl);
             });
 
+            // ── draw nodes ────────────────────────────────────────────
             nodes.forEach(node => {
                 const p = positions[node.id];
                 if (!p) return;
 
                 if (node.type === 'switch') {
+                    // ── switch: rounded rectangle ─────────────────────
                     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                    rect.setAttribute('x', p.x - 70); rect.setAttribute('y', p.y - 34);
-                    rect.setAttribute('width', 140); rect.setAttribute('height', 68);
-                    rect.setAttribute('rx', 10);
-                    rect.setAttribute('fill', node.color || '#3498db');
-                    rect.setAttribute('stroke', '#1f4f73'); rect.setAttribute('stroke-width', '2');
+                    rect.setAttribute('x', p.x - SW_W / 2);
+                    rect.setAttribute('y', p.y - SW_H / 2);
+                    rect.setAttribute('width', SW_W);
+                    rect.setAttribute('height', SW_H);
+                    rect.setAttribute('rx', 12);
+                    rect.setAttribute('fill', node.color || '#0277BD');
+                    rect.setAttribute('stroke', node.stroke || '#01579B');
+                    rect.setAttribute('stroke-width', '3');
                     rect.style.cursor = 'pointer';
+                    rect.style.filter = 'drop-shadow(0 3px 6px rgba(0,0,0,0.30))';
                     rect.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(rect);
 
+                    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    icon.setAttribute('x', p.x);
+                    icon.setAttribute('y', p.y - 6);
+                    icon.setAttribute('text-anchor', 'middle');
+                    icon.setAttribute('font-size', '16');
+                    icon.setAttribute('fill', 'white');
+                    icon.textContent = '⇄';
+                    svg.appendChild(icon);
+
                     const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    txt.setAttribute('x', p.x); txt.setAttribute('y', p.y + 6);
+                    txt.setAttribute('x', p.x);
+                    txt.setAttribute('y', p.y + 14);
                     txt.setAttribute('text-anchor', 'middle');
-                    txt.setAttribute('font-size', '12'); txt.setAttribute('font-weight', 'bold');
+                    txt.setAttribute('font-size', '13');
+                    txt.setAttribute('font-weight', 'bold');
                     txt.setAttribute('fill', 'white');
+                    txt.setAttribute('font-family', 'Arial, sans-serif');
                     txt.textContent = node.label;
+                    txt.style.cursor = 'pointer';
+                    txt.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(txt);
+
                 } else {
+                    // ── host: circle + label block below ─────────────
+                    const isQ = node.quarantined;
+
+                    // outer glow ring for quarantined
+                    if (isQ) {
+                        const glow = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        glow.setAttribute('cx', p.x); glow.setAttribute('cy', p.y);
+                        glow.setAttribute('r', NODE_R + 8);
+                        glow.setAttribute('fill', 'none');
+                        glow.setAttribute('stroke', '#FF6600');
+                        glow.setAttribute('stroke-width', '3');
+                        glow.setAttribute('stroke-dasharray', '6,3');
+                        glow.setAttribute('opacity', '0.7');
+                        svg.appendChild(glow);
+                    }
+
                     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                     circle.setAttribute('cx', p.x); circle.setAttribute('cy', p.y);
-                    circle.setAttribute('r', 28);
-                    circle.setAttribute('fill', node.color || '#e74c3c');
-                    circle.setAttribute('stroke', '#333'); circle.setAttribute('stroke-width', '2');
+                    circle.setAttribute('r', NODE_R);
+                    circle.setAttribute('fill', node.color || '#C62828');
+                    circle.setAttribute('stroke', node.stroke || '#333');
+                    circle.setAttribute('stroke-width', '2.5');
                     circle.style.cursor = 'pointer';
+                    circle.style.filter = 'drop-shadow(0 2px 5px rgba(0,0,0,0.25))';
                     circle.addEventListener('click', () => showNodeInfo(node));
                     svg.appendChild(circle);
 
-                    const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    txt.setAttribute('x', p.x); txt.setAttribute('y', p.y + 54);
-                    txt.setAttribute('text-anchor', 'middle');
-                    txt.setAttribute('font-size', '11'); txt.setAttribute('font-weight', 'bold');
-                    txt.setAttribute('fill', '#222');
-                    txt.textContent = node.label.length > 22 ? node.label.substring(0, 22) + '...' : node.label;
-                    svg.appendChild(txt);
+                    // small role icon inside circle
+                    const roleIcon = { 'Virtual Machine': '🖥', 'Approved IoT': '📡',
+                                       'Trusted / Non-IoT': '✔', 'Quarantined': '🔒',
+                                       'IoT / Unregistered': '?' }[node.role] || '?';
+                    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    icon.setAttribute('x', p.x); icon.setAttribute('y', p.y + 7);
+                    icon.setAttribute('text-anchor', 'middle');
+                    icon.setAttribute('font-size', '18');
+                    icon.setAttribute('fill', 'white');
+                    icon.style.pointerEvents = 'none';
+                    icon.textContent = roleIcon;
+                    svg.appendChild(icon);
 
-                    const mac = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    mac.setAttribute('x', p.x); mac.setAttribute('y', p.y + 70);
-                    mac.setAttribute('text-anchor', 'middle');
-                    mac.setAttribute('font-size', '10'); mac.setAttribute('fill', '#555');
-                    mac.textContent = node.mac || '';
-                    svg.appendChild(mac);
+                    // device name label
+                    const shortLabel = node.label.length > 20
+                        ? node.label.substring(0, 20) + '…'
+                        : node.label;
+                    const nameLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    nameLbl.setAttribute('x', p.x); nameLbl.setAttribute('y', p.y + NODE_R + 18);
+                    nameLbl.setAttribute('text-anchor', 'middle');
+                    nameLbl.setAttribute('font-size', '11');
+                    nameLbl.setAttribute('font-weight', 'bold');
+                    nameLbl.setAttribute('fill', '#111');
+                    nameLbl.setAttribute('font-family', 'Arial, sans-serif');
+                    nameLbl.style.pointerEvents = 'none';
+                    nameLbl.textContent = shortLabel;
+                    svg.appendChild(nameLbl);
+
+                    // mac address label
+                    const macLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    macLbl.setAttribute('x', p.x); macLbl.setAttribute('y', p.y + NODE_R + 32);
+                    macLbl.setAttribute('text-anchor', 'middle');
+                    macLbl.setAttribute('font-size', '9');
+                    macLbl.setAttribute('fill', '#555');
+                    macLbl.setAttribute('font-family', 'monospace');
+                    macLbl.style.pointerEvents = 'none';
+                    macLbl.textContent = node.mac || '';
+                    svg.appendChild(macLbl);
                 }
             });
 
+            // ── node detail panel ─────────────────────────────────────
             function showNodeInfo(node) {
                 if (node.type === 'switch') {
                     info.innerHTML = `
                         <h3>Switch Details</h3>
                         <p><b>Name:</b> ${node.label}</p>
-                        <p><b>DPID:</b> ${node.dpid}</p>
-                        <p><a href="/flows?dpid=${node.dpid}">View Flow Table</a></p>
-                        <p><a href="/ports?dpid=${node.dpid}">View Port Stats</a></p>
+                        <p><b>DPID:</b> <code>${node.dpid}</code></p>
+                        <p><a href="/flows?dpid=${node.dpid}">&#x1F4CB; View Flow Table</a></p>
+                        <p><a href="/ports?dpid=${node.dpid}">&#x1F4CA; View Port Stats</a></p>
                     `;
                 } else {
                     const ipv4 = (node.ipv4 && node.ipv4.length) ? node.ipv4.join(', ') : 'None';
                     const ipv6 = (node.ipv6 && node.ipv6.length) ? node.ipv6.join(', ') : 'None';
 
+                    const statusColour = {
+                        'Quarantined':     '#FF6600',
+                        'Whitelisted':     '#2E7D32',
+                        'Not Whitelisted': '#C62828'
+                    }[node.status] || '#333';
+
                     let actionHtml = '';
                     if (node.quarantined) {
                         actionHtml = `
-                            <form method="post" action="/unquarantineflow">
+                            <form method="post" action="/unquarantineflow" style="margin-top:10px;">
                                 <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
                                 <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
-                                <button class="unquarantine-btn" type="submit">Unquarantine Host</button>
+                                <button class="unquarantine-btn" type="submit">&#x2705; Unquarantine Host</button>
                             </form>`;
                     } else {
                         actionHtml = `
-                            <form method="post" action="/quarantineflow">
+                            <form method="post" action="/quarantineflow" style="margin-top:10px;">
                                 <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
                                 <input type="hidden" name="priority" value="100">
                                 <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
-                                <button class="quarantine-btn" type="submit">Quarantine Host</button>
+                                <button class="quarantine-btn" type="submit">&#x1F512; Quarantine Host</button>
                             </form>`;
                         if (node.role === 'IoT / Unregistered') {
                             actionHtml += `
                             <form method="post" action="/approvehost" style="margin-top:8px;">
                                 <input type="hidden" name="mac" value="${node.mac}">
-                                <button class="approve-btn" type="submit">Approve as IoT</button>
+                                <button class="approve-btn" type="submit">&#x2714; Approve as IoT</button>
                             </form>`;
                         }
                     }
@@ -853,10 +935,10 @@ def topology():
                     info.innerHTML = `
                         <h3>Host Details</h3>
                         <p><b>Name:</b> ${node.label}</p>
-                        <p><b>MAC:</b> ${node.mac}</p>
+                        <p><b>MAC:</b> <code>${node.mac}</code></p>
                         <p><b>Role:</b> ${node.role}</p>
                         <p><b>Owner:</b> ${node.owner}</p>
-                        <p><b>Status:</b> ${node.status}</p>
+                        <p><b>Status:</b> <span style="color:${statusColour};font-weight:bold;">${node.status}</span></p>
                         <p><b>IPv4:</b> ${ipv4}</p>
                         <p><b>IPv6:</b> ${ipv6}</p>
                         <p><b>Switch:</b> ${node.dpid}</p>
@@ -867,7 +949,7 @@ def topology():
             }
         } catch (e) {
             document.getElementById('topology_svg').innerHTML =
-                '<text x="40" y="40">Topology query failed.</text>';
+                '<text x="40" y="40" font-size="16" fill="red">Topology query failed: ' + e.message + '</text>';
         }
     }
 

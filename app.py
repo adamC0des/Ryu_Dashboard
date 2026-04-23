@@ -479,7 +479,6 @@ def iot_watchdog():
     has exceeded IOT_RECHECK_INTERVAL since it was approved.
     If so, auto-quarantine it and mark needs_review=True.
     """
-    preseed_registry()   # ensure whitelist entries exist from the start
     while True:
         try:
             registry = load_registry()
@@ -576,86 +575,86 @@ def next_unknown_label(registry):
             return label
         count += 1
 
-def preseed_registry():
+def sync_device_registry():
     """
-    Ensure every MAC in MAC_WHITELIST has a registry entry even if Ryu
-    has never seen it send traffic. Called once at startup.
+    Merge Ryu's live host report into the persistent registry.
+
+    Rules:
+    - Every MAC in MAC_WHITELIST is always present (pre-seeded).
+    - When Ryu reports a MAC, update dpid/port_no/ipv4/ipv6/last_seen
+      and set currently_seen=True.
+    - When Ryu does NOT report a MAC, set currently_seen=False but
+      NEVER wipe dpid/port_no/ipv4 — keep the last known values.
+    - For whitelisted MACs, only label/role/owner/status come from
+      MAC_WHITELIST; location fields are only updated when Ryu sees them.
+    - User-approved fields (role, label, approved_at) are never
+      overwritten by sync for non-whitelist entries.
     """
     registry = load_registry()
-    changed = False
+    topo_hosts = get_topology_hosts()
+    seen_now = set()
+    now = datetime.utcnow().isoformat()
+
+    # ── Step 1: ensure every whitelisted MAC has a base entry ─────────
     for mac, base in MAC_WHITELIST.items():
         if mac not in registry:
             registry[mac] = {
-                "label":          base.get("label", "Known Device"),
-                "role":           base.get("role", "Virtual Machine"),
-                "owner":          base.get("owner", "Lab"),
+                "label":          base["label"],
+                "role":           base["role"],
+                "owner":          base["owner"],
                 "status":         "Whitelisted",
                 "dpid":           "unknown",
                 "port_no":        "unknown",
                 "ipv4":           [],
                 "ipv6":           [],
                 "last_seen":      None,
-                "currently_seen": False
+                "currently_seen": False,
             }
-            changed = True
-    if changed:
-        save_registry(registry)
+        else:
+            # Always keep canonical label/role/owner/status from whitelist
+            registry[mac]["label"]  = base["label"]
+            registry[mac]["role"]   = base["role"]
+            registry[mac]["owner"]  = base["owner"]
+            registry[mac]["status"] = "Whitelisted"
 
-
-def sync_device_registry():
-    registry = load_registry()
-    topo_hosts = get_topology_hosts()
-    seen_now = set()
-
+    # ── Step 2: update location data for every MAC Ryu reports ────────
     for host in topo_hosts:
         mac = normalize_mac(host.get("mac", ""))
         if not mac:
             continue
-
         seen_now.add(mac)
-        port = host.get("port", {})
-        dpid = str(port.get("dpid", "unknown"))
+        port    = host.get("port", {})
+        dpid    = str(port.get("dpid", "unknown"))
         port_no = str(port.get("port_no", "unknown"))
-        ipv4 = host.get("ipv4", [])
-        ipv6 = host.get("ipv6", [])
-        now = datetime.utcnow().isoformat()
+        ipv4    = host.get("ipv4", [])
+        ipv6    = host.get("ipv6", [])
 
-        if mac in MAC_WHITELIST:
-            base = MAC_WHITELIST[mac]
+        if mac not in registry:
+            # Brand-new unknown device
             registry[mac] = {
-                "label": base.get("label", "Known Device"),
-                "role": base.get("role", "Virtual Machine"),
-                "owner": base.get("owner", "Lab"),
-                "status": "Whitelisted",
-                "dpid": dpid,
-                "port_no": port_no,
-                "ipv4": ipv4,
-                "ipv6": ipv6,
-                "last_seen": now,
-                "currently_seen": True
+                "label":          next_unknown_label(registry),
+                "role":           "IoT / Unregistered",
+                "owner":          "Unregistered",
+                "status":         "Not Whitelisted",
+                "dpid":           dpid,
+                "port_no":        port_no,
+                "ipv4":           ipv4,
+                "ipv6":           ipv6,
+                "last_seen":      now,
+                "currently_seen": True,
             }
         else:
-            if mac not in registry:
-                registry[mac] = {
-                    "label": next_unknown_label(registry),
-                    "role": "IoT / Unregistered",
-                    "owner": "Unregistered",
-                    "status": "Not Whitelisted",
-                    "dpid": dpid,
-                    "port_no": port_no,
-                    "ipv4": ipv4,
-                    "ipv6": ipv6,
-                    "last_seen": now,
-                    "currently_seen": True
-                }
-            else:
-                registry[mac]["dpid"] = dpid
-                registry[mac]["port_no"] = port_no
-                registry[mac]["ipv4"] = ipv4
-                registry[mac]["ipv6"] = ipv6
-                registry[mac]["last_seen"] = now
-                registry[mac]["currently_seen"] = True
+            # Update location; preserve every other field untouched
+            registry[mac]["dpid"]           = dpid
+            registry[mac]["port_no"]        = port_no
+            registry[mac]["ipv4"]           = ipv4
+            registry[mac]["ipv6"]           = ipv6
+            registry[mac]["last_seen"]      = now
+            registry[mac]["currently_seen"] = True
 
+    # ── Step 3: mark devices not seen this cycle ───────────────────────
+    # Only flip the flag — never touch dpid/port_no/ipv4 so last-known
+    # values survive across Ryu MAC-table expiry cycles.
     for mac in registry:
         if mac not in seen_now:
             registry[mac]["currently_seen"] = False
@@ -663,10 +662,18 @@ def sync_device_registry():
     save_registry(registry)
     return registry
 
-def classify_host(mac):
+
+def classify_host(mac, registry=None, quarantine_state=None):
+    """
+    Classify a MAC using an already-loaded registry/quarantine_state.
+    Pass both in from the caller to avoid redundant Ryu round-trips;
+    if omitted the function loads them from disk (no Ryu call).
+    """
     mac_norm = normalize_mac(mac)
-    registry = sync_device_registry()
-    quarantine_state = load_quarantine_state()
+    if registry is None:
+        registry = load_registry()
+    if quarantine_state is None:
+        quarantine_state = load_quarantine_state()
     info = registry.get(mac_norm) or {
         "label": "Unregistered Device",
         "role": "IoT / Unregistered",
@@ -776,11 +783,15 @@ def api_debug():
 
 @app.route("/api/topology")
 def api_topology():
+    # Single sync call — updates registry from Ryu, returns current state
+    registry        = sync_device_registry()
     quarantine_state = load_quarantine_state()
-    stats_switches = get_switches()
-    topo_switches = get_topology_switches()
-    topo_links = get_topology_links()
-    topo_hosts = get_topology_hosts()
+    stats_switches  = get_switches()
+    topo_switches   = get_topology_switches()
+    topo_links      = get_topology_links()
+    # topo_hosts is already baked into registry by sync; we still need
+    # it to know which MACs Ryu reported live this cycle
+    topo_hosts      = get_topology_hosts()
 
     nodes = []
     edges = []
@@ -821,7 +832,7 @@ def api_topology():
         if not mac:
             continue
         live_macs.add(mac)
-        info = classify_host(mac)
+        info = classify_host(mac, registry, quarantine_state)
         port = host.get("port", {})
         real_dpid = str(port.get("dpid", "unknown"))
         real_port_no = str(port.get("port_no", "unknown"))
@@ -867,7 +878,7 @@ def api_topology():
     # Also show whitelisted/approved registry devices Ryu isn't currently seeing.
     # We normalise every DPID to its integer value for comparison so that
     # hex-string DPIDs (from SWITCH_LABELS) and decimal DPIDs (from Ryu) match.
-    registry = load_registry()
+    # registry was already loaded by sync_device_registry() above — reuse it.
 
     def _dpid_int_safe(v):
         try:
@@ -894,7 +905,7 @@ def api_topology():
         if not is_approved:
             continue
 
-        info     = classify_host(mac)
+        info     = classify_host(mac, registry, quarantine_state)
         raw_dpid = entry.get("dpid", "unknown")
         port_no  = str(entry.get("port_no", "unknown"))
 
@@ -946,13 +957,14 @@ def api_topology():
 # -------------------------------------------------------------------
 @app.route("/")
 def home():
-    sync_device_registry()
-    switches = get_switches()
-    topo_hosts = get_topology_hosts()
+    registry         = sync_device_registry()
+    quarantine_state = load_quarantine_state()
+    switches         = get_switches()
+    topo_hosts       = get_topology_hosts()
 
     trusted = iot = quarantined = vms = 0
     for h in topo_hosts:
-        info = classify_host(h.get("mac", ""))
+        info = classify_host(h.get("mac", ""), registry, quarantine_state)
         if info["status"] == "Quarantined":
             quarantined += 1
         elif info["role"] == "Virtual Machine":
@@ -1343,13 +1355,12 @@ def topology():
 
 @app.route("/hosts")
 def hosts():
-    sync_device_registry()
-    registry = load_registry()
+    registry         = sync_device_registry()
     quarantine_state = load_quarantine_state()
 
     rows = ""
     for mac, entry in registry.items():
-        info = classify_host(mac)
+        info = classify_host(mac, registry, quarantine_state)
         dpid = entry.get("dpid", "unknown")
         port_no = entry.get("port_no", "unknown")
         currently_seen = entry.get("currently_seen", False)
@@ -1855,8 +1866,8 @@ def review_device(mac):
 
 
 if __name__ == "__main__":
-    # Pre-populate registry with all known whitelist entries
-    preseed_registry()
+    # Sync registry once on startup (also pre-seeds whitelist entries)
+    sync_device_registry()
     # Start the IoT watchdog background thread
     t = threading.Thread(target=iot_watchdog, daemon=True)
     t.start()

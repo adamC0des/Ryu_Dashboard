@@ -825,6 +825,51 @@ def api_topology():
                     "type": "switch-link"
                 })
 
+    # Build a quick lookup: normalised-int -> canonical dpid string used in switch nodes
+    def _dpid_norm(v):
+        """Return decimal-integer string for any dpid format, or None on failure."""
+        try:
+            s = str(v).strip().lower()
+            if s.startswith("0x"):
+                return str(int(s, 16))
+            if all(c in "0123456789abcdef" and not c.isdigit() == False or c.isdigit() for c in s):
+                # try decimal first, then hex
+                try:
+                    return str(int(s))
+                except ValueError:
+                    return str(int(s, 16))
+        except Exception:
+            return None
+
+    # Build canonical dpid map from actual switch nodes already added
+    canonical_dpid = {}  # any-format-str -> canonical str used in sw node id
+    for sw_node in [n for n in nodes if n["type"] == "switch"]:
+        cd = sw_node["dpid"]
+        norm = _dpid_norm(cd)
+        if norm:
+            canonical_dpid[norm] = cd
+        canonical_dpid[cd] = cd   # identity mapping too
+
+    def resolve_dpid(raw):
+        """Map any DPID representation to the canonical string used in switch node ids."""
+        if raw in canonical_dpid:
+            return canonical_dpid[raw]
+        norm = _dpid_norm(raw)
+        if norm and norm in canonical_dpid:
+            return canonical_dpid[norm]
+        # fallback: try matching by integer value against all known canonicals
+        try:
+            raw_int = int(str(raw).strip(), 0)
+            for cd in canonical_dpid.values():
+                try:
+                    if int(str(cd).strip(), 0) == raw_int:
+                        return cd
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return raw  # last resort: use as-is
+
     # Track which MACs Ryu reported live
     live_macs = set()
 
@@ -835,7 +880,8 @@ def api_topology():
         live_macs.add(mac)
         info = classify_host(mac, registry, quarantine_state)
         port = host.get("port", {})
-        real_dpid = str(port.get("dpid", "unknown"))
+        raw_dpid     = str(port.get("dpid", "unknown"))
+        real_dpid    = resolve_dpid(raw_dpid)   # normalised to match switch node id
         real_port_no = str(port.get("port_no", "unknown"))
 
         quarantined = quarantine_state.get(mac, {}).get("quarantined", False)
@@ -1120,10 +1166,23 @@ def topology():
         }
 
         const MAX_COLS = 6;
+        // Count all hosts per switch for width calculation, using fallback dpid
+        const allDpids = new Set(switchNodes.map(sw => sw.dpid));
+        const firstDpid = switchNodes.length > 0 ? switchNodes[0].dpid : null;
+        const topForWidth = {};
+        const botForWidth = {};
+        hostNodes.forEach(n => {
+            const dpid = allDpids.has(n.dpid) ? n.dpid : (firstDpid || 'unknown');
+            if (n.trusted || n.quarantined) {
+                (topForWidth[dpid] = topForWidth[dpid] || []).push(n);
+            } else {
+                (botForWidth[dpid] = botForWidth[dpid] || []).push(n);
+            }
+        });
         const swWidths = {};
         switchNodes.forEach(sw => {
-            const topW = groupWidth(topBySwitch[sw.dpid], MAX_COLS);
-            const botW = groupWidth(botBySwitch[sw.dpid], MAX_COLS);
+            const topW = groupWidth(topForWidth[sw.dpid], MAX_COLS);
+            const botW = groupWidth(botForWidth[sw.dpid], MAX_COLS);
             swWidths[sw.dpid] = Math.max(topW, botW, SW_W + 2 * SW_SIDE_PAD);
         });
 
@@ -1178,9 +1237,32 @@ def topology():
             positions['sw-' + sw.dpid] = swPositions[sw.dpid];
         });
 
+        // Build a set of known dpids for fast lookup
+        const knownDpids = new Set(switchNodes.map(sw => sw.dpid));
+        // Fallback dpid if a host's dpid isn't in the switch list
+        const fallbackDpid = switchNodes.length > 0 ? switchNodes[0].dpid : null;
+
+        // Re-bucket after resolving any unknown dpids to fallback
+        hostNodes.forEach(n => {
+            if (!knownDpids.has(n.dpid) && fallbackDpid) {
+                n.dpid = fallbackDpid;   // mutate in-place for layout purposes only
+            }
+        });
+        // Re-bucket topBySwitch / botBySwitch with resolved dpids
+        const topBS2 = {};
+        const botBS2 = {};
+        hostNodes.forEach(n => {
+            const dpid = n.dpid || fallbackDpid || 'unknown';
+            if (n.trusted || n.quarantined) {
+                (topBS2[dpid] = topBS2[dpid] || []).push(n);
+            } else {
+                (botBS2[dpid] = botBS2[dpid] || []).push(n);
+            }
+        });
+
         // Top hosts
         switchNodes.forEach(sw => {
-            const hosts = topBySwitch[sw.dpid] || [];
+            const hosts = topBS2[sw.dpid] || [];
             if (!hosts.length) return;
             const anchor = swPositions[sw.dpid].x;
             const rows   = rowCount(hosts, MAX_COLS);
@@ -1192,7 +1274,7 @@ def topology():
 
         // Bottom hosts
         switchNodes.forEach(sw => {
-            const hosts = botBySwitch[sw.dpid] || [];
+            const hosts = botBS2[sw.dpid] || [];
             if (!hosts.length) return;
             const anchor = swPositions[sw.dpid].x;
             layoutHostGroup(hosts, anchor, BOT_START_Y, BOT_ROWS_GAP, MAX_COLS).forEach(({ node, x, y }) => {

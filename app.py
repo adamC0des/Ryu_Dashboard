@@ -212,15 +212,16 @@ pre {{
     gap: 20px;
     flex-wrap: wrap;
 }}
-.graph-panel {{ flex: 2; min-width: 900px; overflow-x: auto; }}
-.info-panel  {{ flex: 1; min-width: 320px; }}
+.graph-panel {{ flex: 2; min-width: 900px; overflow: auto; }}
+.info-panel  {{ flex: 1; min-width: 320px; max-width: 360px; position: sticky; top: 0; align-self: flex-start; max-height: 95vh; overflow-y: auto; }}
 svg {{
     width: 100%;
     min-width: 1200px;
-    height: 900px;
+    height: 600px;   /* JS overwrites this dynamically */
     background: #f8f9fb;
     border: 1px solid #ddd;
     border-radius: 8px;
+    display: block;
 }}
 .info-box {{
     background: #fafafa;
@@ -1020,332 +1021,488 @@ def topology():
     </div>
 
     <script>
-    // ── colour + shape constants ──────────────────────────────────────
-    const NODE_R      = 32;   // host circle radius
-    const SW_W        = 150;  // switch rect width
-    const SW_H        = 56;   // switch rect height
-    const TOP_Y       = 120;  // trusted/quarantined host row Y
-    const SW_Y        = 450;  // switch row Y
-    const BOT_Y_START = 620;  // first bottom host row Y
-    const ROW_GAP     = 110;  // vertical gap between bottom rows
-    const H_SPACING   = 200;  // horizontal spacing between hosts
-    const COLS_PER_ROW = 7;   // max hosts per bottom row before wrapping
+    // ─────────────────────────────────────────────────────────────────
+    // Layout constants
+    // ─────────────────────────────────────────────────────────────────
+    const NODE_R       = 30;    // host circle radius
+    const SW_W         = 160;   // switch rect width
+    const SW_H         = 56;    // switch rect height
+    const H_GAP        = 170;   // min horizontal gap between host centres
+    const V_GAP        = 120;   // vertical gap between host rows
+    const SW_SIDE_PAD  = 120;   // horizontal padding around a switch's host cluster
+    const CANVAS_PAD   = 80;    // left/right canvas padding
+    const TOP_ROWS_GAP = 90;    // gap between top-zone rows
+    const BOT_ROWS_GAP = 110;   // gap between bottom-zone rows
 
+    // ─────────────────────────────────────────────────────────────────
+    // Poll state — selectedNode persists across redraws
+    // ─────────────────────────────────────────────────────────────────
+    let selectedNodeId = null;   // id of currently pinned node
+    let selectedNodeData = null; // last full data for the pinned node
+    let pollPaused = false;      // true while a form interaction is active
+
+    // ─────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────
+    function cols_for(n, maxCols) {
+        // Pick the most square arrangement up to maxCols
+        if (n <= maxCols) return n;
+        for (let c = maxCols; c >= 2; c--) {
+            if (n % c === 0) return c;
+        }
+        return maxCols;
+    }
+
+    function layoutHostGroup(hosts, anchorX, startY, rowGap, maxCols) {
+        // Returns array of {node, x, y} for a flat list of hosts
+        const n = hosts.length;
+        if (n === 0) return [];
+        const cols   = cols_for(n, maxCols);
+        const result = [];
+        hosts.forEach((node, idx) => {
+            const row    = Math.floor(idx / cols);
+            const col    = idx % cols;
+            const rowLen = Math.min(cols, n - row * cols);
+            const rowW   = (rowLen - 1) * H_GAP;
+            const x      = anchorX - rowW / 2 + col * H_GAP;
+            const y      = startY + row * rowGap;
+            result.push({ node, x, y });
+        });
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Main topology loader
+    // ─────────────────────────────────────────────────────────────────
     async function loadTopology() {
+        if (pollPaused) return;
+
+        let data;
         try {
-            const res  = await fetch('/api/topology');
-            const data = await res.json();
-            const svg  = document.getElementById('topology_svg');
-            const info = document.getElementById('node_info');
-            svg.innerHTML = '';
-
-            const nodes       = data.nodes || [];
-            const edges       = data.edges || [];
-            const switchNodes = nodes.filter(n => n.type === 'switch');
-            const hostNodes   = nodes.filter(n => n.type === 'host');
-
-            if (nodes.length === 0) {
-                svg.innerHTML = '<text x="40" y="40" font-size="16">No topology data available.</text>';
-                return;
-            }
-
-            // ── position switches evenly across canvas ────────────────
-            const positions = {};
-            const SW_COUNT  = Math.max(1, switchNodes.length);
-            const CANVAS_W  = 2000;
-            const SW_MARGIN = 200;  // padding from canvas edges
-            const SW_STEP   = SW_COUNT === 1 ? 0
-                                : (CANVAS_W - SW_MARGIN * 2) / (SW_COUNT - 1);
-            const SW_START  = SW_COUNT === 1 ? CANVAS_W / 2 : SW_MARGIN;
-
-            switchNodes.forEach((n, i) => {
-                positions[n.id] = { x: Math.round(SW_START + i * SW_STEP), y: SW_Y };
-            });
-
-            // ── bucket hosts by parent switch + zone (top vs bottom) ──
-            const topBySwitch = {};
-            const botBySwitch = {};
-
-            hostNodes.forEach(n => {
-                const dpid = n.dpid || "unknown";
-                const bucket = (n.trusted || n.quarantined) ? topBySwitch : botBySwitch;
-                if (!bucket[dpid]) bucket[dpid] = [];
-                bucket[dpid].push(n);
-            });
-
-            // ── place top hosts (trusted / quarantined) ───────────────
-            Object.keys(topBySwitch).forEach(dpid => {
-                const arr    = topBySwitch[dpid];
-                const parent = positions['sw-' + dpid] || { x: 1000, y: SW_Y };
-                const total  = arr.length;
-                const startX = parent.x - ((total - 1) * H_SPACING) / 2;
-                arr.forEach((node, idx) => {
-                    positions[node.id] = { x: startX + idx * H_SPACING, y: TOP_Y };
-                });
-            });
-
-            // ── place bottom hosts (unknown/IoT) with row-wrapping ────
-            Object.keys(botBySwitch).forEach(dpid => {
-                const arr    = botBySwitch[dpid];
-                const parent = positions['sw-' + dpid] || { x: 1000, y: SW_Y };
-                const total  = arr.length;
-                const cols   = Math.min(total, COLS_PER_ROW);
-                const rows   = Math.ceil(total / COLS_PER_ROW);
-
-                arr.forEach((node, idx) => {
-                    const row    = Math.floor(idx / COLS_PER_ROW);
-                    const col    = idx % COLS_PER_ROW;
-                    const rowLen = (row === rows - 1) ? (total - row * COLS_PER_ROW) : COLS_PER_ROW;
-                    const rowStartX = parent.x - ((rowLen - 1) * H_SPACING) / 2;
-                    positions[node.id] = {
-                        x: rowStartX + col * H_SPACING,
-                        y: BOT_Y_START + row * ROW_GAP
-                    };
-                });
-            });
-
-            // ── draw edges ────────────────────────────────────────────
-            edges.forEach(edge => {
-                const s = positions[edge.source];
-                const t = positions[edge.target];
-                if (!s || !t) return;
-
-                const isOffline = edge.type === 'host-link-offline';
-                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('x1', s.x); line.setAttribute('y1', s.y);
-                line.setAttribute('x2', t.x); line.setAttribute('y2', t.y);
-                line.setAttribute('stroke', edge.type === 'switch-link' ? '#444' : (isOffline ? '#bbb' : '#999'));
-                line.setAttribute('stroke-width', edge.type === 'switch-link' ? '3' : '1.5');
-                line.setAttribute('stroke-dasharray', edge.type === 'switch-link' ? 'none' : (isOffline ? '8,5' : '5,3'));
-                line.setAttribute('opacity', isOffline ? '0.45' : '1');
-                svg.appendChild(line);
-
-                // port label on edge midpoint
-                const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                lbl.setAttribute('x', (s.x + t.x) / 2 + 6);
-                lbl.setAttribute('y', (s.y + t.y) / 2 - 6);
-                lbl.setAttribute('text-anchor', 'middle');
-                lbl.setAttribute('font-size', '10');
-                lbl.setAttribute('fill', isOffline ? '#aaa' : '#666');
-                lbl.setAttribute('font-family', 'monospace');
-                lbl.textContent = edge.label || '';
-                svg.appendChild(lbl);
-            });
-
-            // ── draw nodes ────────────────────────────────────────────
-            nodes.forEach(node => {
-                const p = positions[node.id];
-                if (!p) return;
-
-                if (node.type === 'switch') {
-                    // ── switch: rounded rectangle ─────────────────────
-                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                    rect.setAttribute('x', p.x - SW_W / 2);
-                    rect.setAttribute('y', p.y - SW_H / 2);
-                    rect.setAttribute('width', SW_W);
-                    rect.setAttribute('height', SW_H);
-                    rect.setAttribute('rx', 12);
-                    rect.setAttribute('fill', node.color || '#0277BD');
-                    rect.setAttribute('stroke', node.stroke || '#01579B');
-                    rect.setAttribute('stroke-width', '3');
-                    rect.style.cursor = 'pointer';
-                    rect.style.filter = 'drop-shadow(0 3px 6px rgba(0,0,0,0.30))';
-                    rect.addEventListener('click', () => showNodeInfo(node));
-                    svg.appendChild(rect);
-
-                    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    icon.setAttribute('x', p.x);
-                    icon.setAttribute('y', p.y - 6);
-                    icon.setAttribute('text-anchor', 'middle');
-                    icon.setAttribute('font-size', '16');
-                    icon.setAttribute('fill', 'white');
-                    icon.textContent = '⇄';
-                    svg.appendChild(icon);
-
-                    const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    txt.setAttribute('x', p.x);
-                    txt.setAttribute('y', p.y + 14);
-                    txt.setAttribute('text-anchor', 'middle');
-                    txt.setAttribute('font-size', '13');
-                    txt.setAttribute('font-weight', 'bold');
-                    txt.setAttribute('fill', 'white');
-                    txt.setAttribute('font-family', 'Arial, sans-serif');
-                    txt.textContent = node.label;
-                    txt.style.cursor = 'pointer';
-                    txt.addEventListener('click', () => showNodeInfo(node));
-                    svg.appendChild(txt);
-
-                } else {
-                    // ── host: circle + label block below ─────────────
-                    const isQ = node.quarantined;
-                    const isOffline = node.offline === true;
-                    const nodeOpacity = isOffline ? '0.45' : '1';
-
-                    // outer glow ring for quarantined
-                    if (isQ) {
-                        const glow = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                        glow.setAttribute('cx', p.x); glow.setAttribute('cy', p.y);
-                        glow.setAttribute('r', NODE_R + 8);
-                        glow.setAttribute('fill', 'none');
-                        glow.setAttribute('stroke', '#FF6600');
-                        glow.setAttribute('stroke-width', '3');
-                        glow.setAttribute('stroke-dasharray', '6,3');
-                        glow.setAttribute('opacity', '0.7');
-                        svg.appendChild(glow);
-                    }
-
-                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                    circle.setAttribute('cx', p.x); circle.setAttribute('cy', p.y);
-                    circle.setAttribute('r', NODE_R);
-                    circle.setAttribute('fill', node.color || '#C62828');
-                    circle.setAttribute('stroke', node.stroke || '#333');
-                    circle.setAttribute('stroke-width', isOffline ? '1.5' : '2.5');
-                    circle.setAttribute('stroke-dasharray', isOffline ? '5,3' : 'none');
-                    circle.setAttribute('opacity', nodeOpacity);
-                    circle.style.cursor = 'pointer';
-                    circle.style.filter = isOffline ? 'none' : 'drop-shadow(0 2px 5px rgba(0,0,0,0.25))';
-                    circle.addEventListener('click', () => showNodeInfo(node));
-                    svg.appendChild(circle);
-
-                    // small role icon inside circle
-                    const roleIcon = { 'Virtual Machine': '🖥', 'Approved IoT': '📡',
-                                       'Trusted / Non-IoT': '✔', 'Quarantined': '🔒',
-                                       'IoT / Unregistered': '?' }[node.role] || '?';
-                    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    icon.setAttribute('x', p.x); icon.setAttribute('y', p.y + 7);
-                    icon.setAttribute('text-anchor', 'middle');
-                    icon.setAttribute('font-size', '18');
-                    icon.setAttribute('fill', 'white');
-                    icon.setAttribute('opacity', nodeOpacity);
-                    icon.style.pointerEvents = 'none';
-                    icon.textContent = roleIcon;
-                    svg.appendChild(icon);
-
-                    // device name label
-                    const shortLabel = node.label.length > 20
-                        ? node.label.substring(0, 20) + '…'
-                        : node.label;
-                    const nameLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    nameLbl.setAttribute('x', p.x); nameLbl.setAttribute('y', p.y + NODE_R + 18);
-                    nameLbl.setAttribute('text-anchor', 'middle');
-                    nameLbl.setAttribute('font-size', '11');
-                    nameLbl.setAttribute('font-weight', 'bold');
-                    nameLbl.setAttribute('fill', isOffline ? '#888' : '#111');
-                    nameLbl.setAttribute('font-family', 'Arial, sans-serif');
-                    nameLbl.style.pointerEvents = 'none';
-                    nameLbl.textContent = shortLabel;
-                    svg.appendChild(nameLbl);
-
-                    // offline badge
-                    if (isOffline) {
-                        const offBadge = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                        offBadge.setAttribute('x', p.x); offBadge.setAttribute('y', p.y + NODE_R + 30);
-                        offBadge.setAttribute('text-anchor', 'middle');
-                        offBadge.setAttribute('font-size', '9');
-                        offBadge.setAttribute('fill', '#999');
-                        offBadge.setAttribute('font-style', 'italic');
-                        offBadge.style.pointerEvents = 'none';
-                        offBadge.textContent = '(offline / last known)';
-                        svg.appendChild(offBadge);
-                    }
-
-                    // mac address label
-                    const macLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                    macLbl.setAttribute('x', p.x); macLbl.setAttribute('y', p.y + NODE_R + (isOffline ? 42 : 32));
-                    macLbl.setAttribute('text-anchor', 'middle');
-                    macLbl.setAttribute('font-size', '9');
-                    macLbl.setAttribute('fill', isOffline ? '#aaa' : '#555');
-                    macLbl.setAttribute('font-family', 'monospace');
-                    macLbl.style.pointerEvents = 'none';
-                    macLbl.textContent = node.mac || '';
-                    svg.appendChild(macLbl);
-                }
-            });
-
-            // ── node detail panel ─────────────────────────────────────
-            function showNodeInfo(node) {
-                if (node.type === 'switch') {
-                    info.innerHTML = `
-                        <h3>Switch Details</h3>
-                        <p><b>Name:</b> ${node.label}</p>
-                        <p><b>DPID:</b> <code>${node.dpid}</code></p>
-                        <p><a href="/flows?dpid=${node.dpid}">&#x1F4CB; View Flow Table</a></p>
-                        <p><a href="/ports?dpid=${node.dpid}">&#x1F4CA; View Port Stats</a></p>
-                    `;
-                } else {
-                    const ipv4 = (node.ipv4 && node.ipv4.length) ? node.ipv4.join(', ') : 'None';
-                    const ipv6 = (node.ipv6 && node.ipv6.length) ? node.ipv6.join(', ') : 'None';
-
-                    const statusColour = {
-                        'Quarantined':     '#FF6600',
-                        'Whitelisted':     '#2E7D32',
-                        'Not Whitelisted': '#C62828'
-                    }[node.status] || '#333';
-
-                    let actionHtml = '';
-                    if (node.quarantined) {
-                        actionHtml = `
-                            <div style="background:#fff3e0;border:1px solid #ff6600;border-radius:6px;padding:10px;margin-top:10px;">
-                                <p style="margin:0 0 6px;font-size:12px;color:#b84c00;font-weight:bold;">
-                                    &#x26A0; This device requires review before release.
-                                </p>
-                                <a href="/review/${node.mac}"
-                                   style="display:block;background:#007a45;color:white;text-align:center;padding:9px;border-radius:4px;text-decoration:none;font-weight:bold;margin-bottom:6px;">
-                                    &#x1F50D; Review Activity &amp; Release
-                                </a>
-                            </div>`;
-                    } else {
-                        actionHtml = `
-                            <form method="post" action="/quarantineflow" style="margin-top:10px;">
-                                <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
-                                <input type="hidden" name="priority" value="100">
-                                <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
-                                <button class="quarantine-btn" type="submit">&#x1F512; Quarantine Host</button>
-                            </form>`;
-                        if (node.role === 'IoT / Unregistered') {
-                            actionHtml += `
-                            <hr style="margin:10px 0;">
-                            <label style="font-size:12px;font-weight:bold;">Device Name (optional)</label>
-                            <input id="approve_name_${node.mac.replace(/:/g,'')}" type="text"
-                                   placeholder="${node.label}"
-                                   style="width:100%;padding:6px;margin:4px 0 8px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;">
-                            <form method="post" action="/approvehost" style="margin-top:4px;">
-                                <input type="hidden" name="mac" value="${node.mac}">
-                                <input type="hidden" name="label_field" id="iot_label_${node.mac.replace(/:/g,'')}">
-                                <button class="approve-btn" type="submit"
-                                    onclick="document.getElementById('iot_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value"
-                                    style="width:100%;">&#x1F4E1; Approve as IoT</button>
-                            </form>
-                            <form method="post" action="/approvevm" style="margin-top:6px;">
-                                <input type="hidden" name="mac" value="${node.mac}">
-                                <input type="hidden" name="label_field" id="vm_label_${node.mac.replace(/:/g,'')}">
-                                <button style="background:#5b2d8e;color:white;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;" type="submit"
-                                    onclick="document.getElementById('vm_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value">&#x1F5A5; Approve as VM</button>
-                            </form>`;
-                        }
-                    }
-
-                    info.innerHTML = `
-                        <h3>Host Details</h3>
-                        <p><b>Name:</b> ${node.label}</p>
-                        <p><b>MAC:</b> <code>${node.mac}</code></p>
-                        <p><b>Role:</b> ${node.role}</p>
-                        <p><b>Owner:</b> ${node.owner}</p>
-                        <p><b>Status:</b> <span style="color:${statusColour};font-weight:bold;">${node.status}</span></p>
-                        <p><b>IPv4:</b> ${ipv4}</p>
-                        <p><b>IPv6:</b> ${ipv6}</p>
-                        <p><b>Switch:</b> ${node.dpid}</p>
-                        <p><b>Port:</b> ${node.port_no}</p>
-                        ${actionHtml}
-                    `;
-                }
-            }
+            const res = await fetch('/api/topology');
+            data = await res.json();
         } catch (e) {
             document.getElementById('topology_svg').innerHTML =
                 '<text x="40" y="40" font-size="16" fill="red">Topology query failed: ' + e.message + '</text>';
+            return;
+        }
+
+        const svg        = document.getElementById('topology_svg');
+        const infoPanel  = document.getElementById('node_info');
+        const nodes      = data.nodes || [];
+        const edges      = data.edges || [];
+        const switchNodes = nodes.filter(n => n.type === 'switch');
+        const hostNodes   = nodes.filter(n => n.type === 'host');
+
+        if (nodes.length === 0) {
+            svg.innerHTML = '<text x="40" y="40" font-size="16">No topology data available.</text>';
+            return;
+        }
+
+        // ── 1. Bucket hosts per switch, trusted-top vs untrusted-bottom ──
+        const topBySwitch = {};   // dpid -> [nodes]
+        const botBySwitch = {};
+        hostNodes.forEach(n => {
+            const dpid = n.dpid || 'unknown';
+            if (n.trusted || n.quarantined) {
+                (topBySwitch[dpid] = topBySwitch[dpid] || []).push(n);
+            } else {
+                (botBySwitch[dpid] = botBySwitch[dpid] || []).push(n);
+            }
+        });
+
+        // ── 2. Calculate per-switch cluster widths ─────────────────────
+        // A switch's cluster width is the max of its top/bottom group widths.
+        function groupWidth(hosts, maxCols) {
+            if (!hosts || hosts.length === 0) return SW_W;
+            const cols = cols_for(hosts.length, maxCols);
+            return Math.max(SW_W, (cols - 1) * H_GAP + 2 * SW_SIDE_PAD);
+        }
+
+        const MAX_COLS = 6;
+        const swWidths = {};
+        switchNodes.forEach(sw => {
+            const topW = groupWidth(topBySwitch[sw.dpid], MAX_COLS);
+            const botW = groupWidth(botBySwitch[sw.dpid], MAX_COLS);
+            swWidths[sw.dpid] = Math.max(topW, botW, SW_W + 2 * SW_SIDE_PAD);
+        });
+
+        // ── 3. Assign switch X positions (left-to-right, no overlap) ──
+        const totalSwitchWidth = switchNodes.reduce((s, sw) => s + swWidths[sw.dpid], 0);
+        const gapBetween = switchNodes.length > 1
+            ? Math.max(60, (totalSwitchWidth * 0.15) / (switchNodes.length - 1))
+            : 0;
+        const totalWidth = totalSwitchWidth
+            + gapBetween * Math.max(0, switchNodes.length - 1)
+            + CANVAS_PAD * 2;
+        const CANVAS_W = Math.max(1400, totalWidth);
+
+        const swPositions = {};   // dpid -> {x, y}
+        let curX = CANVAS_PAD;
+        switchNodes.forEach(sw => {
+            const halfW = swWidths[sw.dpid] / 2;
+            swPositions[sw.dpid] = { x: Math.round(curX + halfW), y: 0 }; // Y set later
+            curX += swWidths[sw.dpid] + gapBetween;
+        });
+
+        // ── 4. Calculate row counts to determine total canvas height ──
+        function rowCount(hosts, maxCols) {
+            if (!hosts || !hosts.length) return 0;
+            return Math.ceil(hosts.length / cols_for(hosts.length, maxCols));
+        }
+
+        const maxTopRows = Math.max(0, ...switchNodes.map(sw =>
+            rowCount(topBySwitch[sw.dpid], MAX_COLS)));
+        const maxBotRows = Math.max(0, ...switchNodes.map(sw =>
+            rowCount(botBySwitch[sw.dpid], MAX_COLS)));
+
+        const TOP_ZONE_H  = maxTopRows > 0 ? maxTopRows * V_GAP + 60 : 0;
+        const BOT_ZONE_H  = maxBotRows > 0 ? maxBotRows * BOT_ROWS_GAP + 60 : 0;
+        const SW_Y        = TOP_ZONE_H + 80;
+        const BOT_START_Y = SW_Y + SW_H / 2 + 90;
+        const CANVAS_H    = Math.max(600, BOT_START_Y + BOT_ZONE_H + 100);
+
+        // Finalise switch Y now that we know SW_Y
+        switchNodes.forEach(sw => { swPositions[sw.dpid].y = SW_Y; });
+
+        // Update SVG dimensions
+        svg.setAttribute('viewBox', `0 0 ${CANVAS_W} ${CANVAS_H}`);
+        svg.style.height = Math.max(600, CANVAS_H) + 'px';
+        svg.innerHTML = '';
+
+        // ── 5. Compute all host positions ──────────────────────────────
+        const positions = {};
+
+        // Register switch positions
+        switchNodes.forEach(sw => {
+            positions['sw-' + sw.dpid] = swPositions[sw.dpid];
+        });
+
+        // Top hosts
+        switchNodes.forEach(sw => {
+            const hosts = topBySwitch[sw.dpid] || [];
+            if (!hosts.length) return;
+            const anchor = swPositions[sw.dpid].x;
+            const rows   = rowCount(hosts, MAX_COLS);
+            const startY = SW_Y - SW_H / 2 - 80 - (rows - 1) * V_GAP;
+            layoutHostGroup(hosts, anchor, startY, V_GAP, MAX_COLS).forEach(({ node, x, y }) => {
+                positions[node.id] = { x: Math.round(x), y: Math.round(y) };
+            });
+        });
+
+        // Bottom hosts
+        switchNodes.forEach(sw => {
+            const hosts = botBySwitch[sw.dpid] || [];
+            if (!hosts.length) return;
+            const anchor = swPositions[sw.dpid].x;
+            layoutHostGroup(hosts, anchor, BOT_START_Y, BOT_ROWS_GAP, MAX_COLS).forEach(({ node, x, y }) => {
+                positions[node.id] = { x: Math.round(x), y: Math.round(y) };
+            });
+        });
+
+        // ── 6. Draw edges ──────────────────────────────────────────────
+        edges.forEach(edge => {
+            const s = positions[edge.source];
+            const t = positions[edge.target];
+            if (!s || !t) return;
+            const isOffline   = edge.type === 'host-link-offline';
+            const isSwitchLnk = edge.type === 'switch-link';
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', s.x); line.setAttribute('y1', s.y);
+            line.setAttribute('x2', t.x); line.setAttribute('y2', t.y);
+            line.setAttribute('stroke',       isSwitchLnk ? '#444' : isOffline ? '#ccc' : '#aaa');
+            line.setAttribute('stroke-width', isSwitchLnk ? '3' : '1.5');
+            line.setAttribute('stroke-dasharray', isSwitchLnk ? 'none' : isOffline ? '8,5' : '4,3');
+            line.setAttribute('opacity', isOffline ? '0.4' : '1');
+            svg.appendChild(line);
+
+            if (!isSwitchLnk) {
+                const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                lbl.setAttribute('x', (s.x + t.x) / 2 + 6);
+                lbl.setAttribute('y', (s.y + t.y) / 2 - 5);
+                lbl.setAttribute('text-anchor', 'middle');
+                lbl.setAttribute('font-size', '9');
+                lbl.setAttribute('fill', isOffline ? '#bbb' : '#777');
+                lbl.setAttribute('font-family', 'monospace');
+                lbl.textContent = edge.label || '';
+                svg.appendChild(lbl);
+            }
+        });
+
+        // ── 7. Draw nodes ──────────────────────────────────────────────
+        nodes.forEach(node => {
+            const p = positions[node.id];
+            if (!p) return;
+            const isSelected = (node.id === selectedNodeId);
+
+            if (node.type === 'switch') {
+                // Selection highlight ring
+                if (isSelected) {
+                    const ring = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    ring.setAttribute('x',      p.x - SW_W / 2 - 6);
+                    ring.setAttribute('y',      p.y - SW_H / 2 - 6);
+                    ring.setAttribute('width',  SW_W + 12);
+                    ring.setAttribute('height', SW_H + 12);
+                    ring.setAttribute('rx', 16);
+                    ring.setAttribute('fill', 'none');
+                    ring.setAttribute('stroke', '#FFD600');
+                    ring.setAttribute('stroke-width', '3');
+                    svg.appendChild(ring);
+                }
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x',      p.x - SW_W / 2);
+                rect.setAttribute('y',      p.y - SW_H / 2);
+                rect.setAttribute('width',  SW_W);
+                rect.setAttribute('height', SW_H);
+                rect.setAttribute('rx', 12);
+                rect.setAttribute('fill',         node.color  || '#0277BD');
+                rect.setAttribute('stroke',       node.stroke || '#01579B');
+                rect.setAttribute('stroke-width', '3');
+                rect.style.cursor = 'pointer';
+                rect.style.filter = 'drop-shadow(0 3px 6px rgba(0,0,0,0.30))';
+                rect.addEventListener('click', () => pinNode(node));
+                svg.appendChild(rect);
+
+                const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                icon.setAttribute('x', p.x); icon.setAttribute('y', p.y - 5);
+                icon.setAttribute('text-anchor', 'middle');
+                icon.setAttribute('font-size', '15');
+                icon.setAttribute('fill', 'white');
+                icon.style.pointerEvents = 'none';
+                icon.textContent = '⇄';
+                svg.appendChild(icon);
+
+                const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                txt.setAttribute('x', p.x); txt.setAttribute('y', p.y + 14);
+                txt.setAttribute('text-anchor', 'middle');
+                txt.setAttribute('font-size', '12');
+                txt.setAttribute('font-weight', 'bold');
+                txt.setAttribute('fill', 'white');
+                txt.style.pointerEvents = 'none';
+                txt.textContent = node.label;
+                svg.appendChild(txt);
+
+            } else {
+                // Host node
+                const isOffline = node.offline === true;
+                const opacity   = isOffline ? '0.45' : '1';
+
+                // Selection highlight
+                if (isSelected) {
+                    const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    ring.setAttribute('cx', p.x); ring.setAttribute('cy', p.y);
+                    ring.setAttribute('r', NODE_R + 9);
+                    ring.setAttribute('fill', 'none');
+                    ring.setAttribute('stroke', '#FFD600');
+                    ring.setAttribute('stroke-width', '3');
+                    svg.appendChild(ring);
+                }
+
+                // Quarantine glow ring
+                if (node.quarantined) {
+                    const glow = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    glow.setAttribute('cx', p.x); glow.setAttribute('cy', p.y);
+                    glow.setAttribute('r', NODE_R + 7);
+                    glow.setAttribute('fill', 'none');
+                    glow.setAttribute('stroke', '#FF6600');
+                    glow.setAttribute('stroke-width', '3');
+                    glow.setAttribute('stroke-dasharray', '6,3');
+                    glow.setAttribute('opacity', '0.7');
+                    svg.appendChild(glow);
+                }
+
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', p.x); circle.setAttribute('cy', p.y);
+                circle.setAttribute('r',  NODE_R);
+                circle.setAttribute('fill',         node.color  || '#C62828');
+                circle.setAttribute('stroke',       node.stroke || '#333');
+                circle.setAttribute('stroke-width', isOffline ? '1.5' : '2.5');
+                circle.setAttribute('stroke-dasharray', isOffline ? '5,3' : 'none');
+                circle.setAttribute('opacity', opacity);
+                circle.style.cursor = 'pointer';
+                circle.style.filter = isOffline ? 'none' : 'drop-shadow(0 2px 5px rgba(0,0,0,0.25))';
+                circle.addEventListener('click', () => pinNode(node));
+                svg.appendChild(circle);
+
+                const roleIcon = {
+                    'Virtual Machine':    '🖥',
+                    'Approved IoT':       '📡',
+                    'Trusted / Non-IoT':  '✔',
+                    'Quarantined':        '🔒',
+                    'IoT / Unregistered': '?'
+                }[node.role] || '?';
+
+                const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                icon.setAttribute('x', p.x); icon.setAttribute('y', p.y + 7);
+                icon.setAttribute('text-anchor', 'middle');
+                icon.setAttribute('font-size', '16');
+                icon.setAttribute('fill', 'white');
+                icon.setAttribute('opacity', opacity);
+                icon.style.pointerEvents = 'none';
+                icon.textContent = roleIcon;
+                svg.appendChild(icon);
+
+                // Name label
+                const shortLabel = node.label.length > 18 ? node.label.substring(0, 18) + '…' : node.label;
+                const nameLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                nameLbl.setAttribute('x', p.x); nameLbl.setAttribute('y', p.y + NODE_R + 16);
+                nameLbl.setAttribute('text-anchor', 'middle');
+                nameLbl.setAttribute('font-size', '10');
+                nameLbl.setAttribute('font-weight', 'bold');
+                nameLbl.setAttribute('fill', isOffline ? '#999' : '#111');
+                nameLbl.style.pointerEvents = 'none';
+                nameLbl.textContent = shortLabel;
+                svg.appendChild(nameLbl);
+
+                if (isOffline) {
+                    const offLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    offLbl.setAttribute('x', p.x); offLbl.setAttribute('y', p.y + NODE_R + 27);
+                    offLbl.setAttribute('text-anchor', 'middle');
+                    offLbl.setAttribute('font-size', '8');
+                    offLbl.setAttribute('fill', '#aaa');
+                    offLbl.setAttribute('font-style', 'italic');
+                    offLbl.style.pointerEvents = 'none';
+                    offLbl.textContent = '(last known)';
+                    svg.appendChild(offLbl);
+                }
+
+                const macLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                macLbl.setAttribute('x', p.x);
+                macLbl.setAttribute('y', p.y + NODE_R + (isOffline ? 37 : 27));
+                macLbl.setAttribute('text-anchor', 'middle');
+                macLbl.setAttribute('font-size', '8');
+                macLbl.setAttribute('fill', isOffline ? '#bbb' : '#666');
+                macLbl.setAttribute('font-family', 'monospace');
+                macLbl.style.pointerEvents = 'none';
+                macLbl.textContent = node.mac || '';
+                svg.appendChild(macLbl);
+            }
+        });
+
+        // ── 8. If a node was pinned, refresh its panel data ────────────
+        if (selectedNodeId) {
+            const freshNode = nodes.find(n => n.id === selectedNodeId);
+            if (freshNode) {
+                selectedNodeData = freshNode;
+                renderNodePanel(freshNode);
+            }
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Pin a node — show its panel and keep it shown across redraws
+    // ─────────────────────────────────────────────────────────────────
+    function pinNode(node) {
+        selectedNodeId   = node.id;
+        selectedNodeData = node;
+        renderNodePanel(node);
+    }
+
+    function renderNodePanel(node) {
+        const info = document.getElementById('node_info');
+
+        // "X Clear" button at top of panel
+        const clearBtn = `<button onclick="clearSelection()"
+            style="float:right;background:#888;color:white;border:none;border-radius:4px;
+                   padding:4px 10px;cursor:pointer;font-size:12px;">✕ Clear</button>`;
+
+        if (node.type === 'switch') {
+            info.innerHTML = `
+                ${clearBtn}
+                <h3>Switch Details</h3>
+                <p><b>Name:</b> ${node.label}</p>
+                <p><b>DPID:</b> <code>${node.dpid}</code></p>
+                <p><a href="/flows?dpid=${node.dpid}">📋 View Flow Table</a></p>
+                <p><a href="/ports?dpid=${node.dpid}">📊 View Port Stats</a></p>`;
+        } else {
+            const ipv4 = (node.ipv4 && node.ipv4.length) ? node.ipv4.join(', ') : 'None';
+            const ipv6 = (node.ipv6 && node.ipv6.length) ? node.ipv6.join(', ') : 'None';
+            const statusColour = {
+                'Quarantined':     '#FF6600',
+                'Whitelisted':     '#2E7D32',
+                'Not Whitelisted': '#C62828'
+            }[node.status] || '#333';
+
+            let actionHtml = '';
+            if (node.quarantined) {
+                actionHtml = `
+                    <div style="background:#fff3e0;border:1px solid #ff6600;border-radius:6px;padding:10px;margin-top:10px;">
+                        <p style="margin:0 0 6px;font-size:12px;color:#b84c00;font-weight:bold;">
+                            ⚠ This device requires review before release.
+                        </p>
+                        <a href="/review/${node.mac}"
+                           style="display:block;background:#007a45;color:white;text-align:center;
+                                  padding:9px;border-radius:4px;text-decoration:none;font-weight:bold;">
+                            🔍 Review Activity &amp; Release
+                        </a>
+                    </div>`;
+            } else {
+                actionHtml = `
+                    <form method="post" action="/quarantineflow" style="margin-top:10px;"
+                          onsubmit="pollPaused=true;">
+                        <input type="hidden" name="dpid" value="${node.real_dpid || node.dpid}">
+                        <input type="hidden" name="priority" value="100">
+                        <input type="hidden" name="match" value='{"eth_src":"${node.mac}"}'>
+                        <button class="quarantine-btn" type="submit" style="width:100%;">🔒 Quarantine Host</button>
+                    </form>`;
+                if (node.role === 'IoT / Unregistered') {
+                    actionHtml += `
+                    <hr style="margin:10px 0;">
+                    <label style="font-size:12px;font-weight:bold;">Device Name (optional)</label>
+                    <input id="approve_name_${node.mac.replace(/:/g,'')}" type="text"
+                           placeholder="${node.label}"
+                           style="width:100%;padding:6px;margin:4px 0 8px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;"
+                           onfocus="pollPaused=true;" onblur="pollPaused=false;">
+                    <form method="post" action="/approvehost" style="margin-top:4px;"
+                          onsubmit="pollPaused=true;">
+                        <input type="hidden" name="mac" value="${node.mac}">
+                        <input type="hidden" name="label_field" id="iot_label_${node.mac.replace(/:/g,'')}">
+                        <button class="approve-btn" type="submit" style="width:100%;"
+                            onclick="document.getElementById('iot_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value">
+                            📡 Approve as IoT</button>
+                    </form>
+                    <form method="post" action="/approvevm" style="margin-top:6px;"
+                          onsubmit="pollPaused=true;">
+                        <input type="hidden" name="mac" value="${node.mac}">
+                        <input type="hidden" name="label_field" id="vm_label_${node.mac.replace(/:/g,'')}">
+                        <button style="background:#5b2d8e;color:white;border:none;padding:8px 12px;
+                                       border-radius:4px;cursor:pointer;width:100%;" type="submit"
+                            onclick="document.getElementById('vm_label_${node.mac.replace(/:/g,'')}').value=document.getElementById('approve_name_${node.mac.replace(/:/g,'')}').value">
+                            🖥 Approve as VM</button>
+                    </form>`;
+                }
+            }
+
+            const offlineBadge = node.offline
+                ? `<span style="background:#eee;color:#888;font-size:11px;padding:2px 7px;
+                                border-radius:10px;margin-left:6px;font-style:italic;">last known</span>`
+                : '';
+
+            info.innerHTML = `
+                ${clearBtn}
+                <h3>Host Details ${offlineBadge}</h3>
+                <p><b>Name:</b> ${node.label}</p>
+                <p><b>MAC:</b> <code>${node.mac}</code></p>
+                <p><b>Role:</b> ${node.role}</p>
+                <p><b>Owner:</b> ${node.owner}</p>
+                <p><b>Status:</b> <span style="color:${statusColour};font-weight:bold;">${node.status}</span></p>
+                <p><b>IPv4:</b> ${ipv4}</p>
+                <p><b>IPv6:</b> ${ipv6}</p>
+                <p><b>Switch:</b> ${node.dpid}</p>
+                <p><b>Port:</b> ${node.port_no}</p>
+                ${actionHtml}`;
+        }
+    }
+
+    function clearSelection() {
+        selectedNodeId   = null;
+        selectedNodeData = null;
+        pollPaused       = false;
+        document.getElementById('node_info').innerHTML =
+            '<h3>Node Details</h3><p>Click a switch or host in the topology graph.</p>';
+    }
+
+    // Start polling — loadTopology redraws the SVG but preserves selectedNodeId
     loadTopology();
     setInterval(loadTopology, 1500);
     </script>

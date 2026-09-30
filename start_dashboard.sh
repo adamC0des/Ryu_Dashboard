@@ -13,7 +13,8 @@ cd ~/ryu || exit 1
 PYTHONPATH=. python3.8 ./bin/ryu-manager \
 ryu/app/simple_switch_13.py \
 ryu/app/ofctl_rest.py \
-ryu/app/rest_topology.py &
+ryu/app/rest_topology.py \
+>> /var/log/ryu/ryu.log 2>&1 & 
 RYU_PID=$!
 
 sleep 5
